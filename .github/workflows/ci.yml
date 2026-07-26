@@ -65,6 +65,12 @@ jobs:
           -Dturso-lib-dir="$TURSO_LIB_DIR"
           -Dturso-linkage=dynamic
 
+      - name: Run basic example
+        run: >-
+          zig build run-example
+          -Dturso-lib-dir="$TURSO_LIB_DIR"
+          -Dturso-linkage=dynamic
+
       - name: Check whitespace
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}

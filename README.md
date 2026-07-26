@@ -1,59 +1,94 @@
 # Turso for Zig
 
-Pre-release scaffold for an idiomatic Zig 0.16.0 binding to Turso's embedded
-database API. It is not an SDK yet: this repository intentionally contains no
-FFI declarations, wrapper implementation, native binaries, or public database
-API.
+An early synchronous Zig 0.16.0 SDK for Turso embedded/local databases. The
+implemented API opens local databases, prepares statements, binds positional
+values, executes SQL, streams rows, copies typed values, exposes metadata and
+transaction state, and retains native SQL diagnostics.
 
-The binding should wrap Turso's [`sdk-kit/turso.h`](https://github.com/tursodatabase/turso/blob/main/sdk-kit/turso.h)
-C ABI, not reach into Rust internals. That ABI already provides database creation,
-connections, prepared statements, binding, row access, cleanup, callbacks, and
-the low-level sync I/O-driving interface.
+The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
+macOS, Windows, cloud sync, callbacks, extensions, and async I/O are not yet
+supported.
 
-## Current layout
+## Native library requirement
 
-```text
-turso-zig/
-├── build.zig             # package scaffold; intentionally builds no artifact
-├── build.zig.zon         # Zig 0.16.0 package metadata
-├── docs/                 # implementation and distribution decisions
-├── src/README.md         # proposed source boundaries
-├── tests/README.md       # behavioral test direction
-└── examples/README.md    # first-example scope
-```
+This package vendors `turso.h` from Turso tag `v0.7.1`. Supply a
+`turso_sdk_kit` library built from that same tag. A current `main` or 0.8
+pre-release library is not ABI-compatible merely because it links.
 
-## Implement in this order
-
-1. Choose how consumers obtain the Turso native library. See
-   [`docs/distribution.md`](docs/distribution.md).
-2. Implement only synchronous local databases first. The exact API, lifetime,
-   and error requirements are in
-   [`docs/implementation-plan.md`](docs/implementation-plan.md).
-3. Add behavioral tests and an example before expanding the API surface.
-4. Add cloud sync, user-defined functions, loadable extensions, and async-I/O
-   driving as separately tested follow-up features.
-
-## Non-goals for the first release
-
-- A second SQL parser or database engine.
-- Reimplementing the C ABI in Zig.
-- Building Turso's Rust workspace implicitly on every consumer build.
-- An async facade before a synchronous API has clear ownership and error
-  semantics.
-
-## Local checks
-
-Install Zig 0.16.0, then validate the scaffold from the repository root:
+Every build command requires an absolute library directory:
 
 ```bash
-zig fmt --check build.zig
-zig build
+zig build test \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
+  -Dturso-linkage=dynamic
+zig build run-example \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
+  -Dturso-linkage=dynamic
+zig fmt --check build.zig src tests examples
 git diff --check
 ```
 
-`zig build` succeeding only confirms package metadata and build-script syntax;
-it does not build a library until implementation begins.
+`-Dturso-linkage` defaults to `dynamic`. Dynamic linking is runtime-tested on
+Ubuntu. Static selection is implemented, but its Rust and platform system
+library closure is not enumerated or supported yet. `build.zig` never invokes
+Cargo, falls back to `pkg-config`, or searches for an arbitrary system Turso
+library. Tests and the example reject a runtime version outside the 0.7.1 ABI
+version family (`0.7.1`, `0.7.1-*`, or `0.7.1+*`).
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting changes and
-[`SECURITY.md`](SECURITY.md) for private vulnerability reporting. This project
-is licensed under the [`MIT License`](LICENSE).
+## Basic use
+
+```zig
+var result = try turso.Database.create(allocator, .{ .path = ":memory:" });
+var database = switch (result) {
+    .success => |value| value,
+    .failure => |*failure| {
+        defer failure.deinit(allocator);
+        return failure.category;
+    },
+};
+defer database.deinit();
+try database.open();
+
+var connection = try database.connect();
+defer connection.deinit();
+var statement = try connection.prepareSingle("SELECT ?1");
+defer statement.deinit();
+try statement.bindText(1, "hello");
+if (try statement.step() == .row) {
+    var value = try statement.value(0);
+    defer value.deinit(allocator);
+}
+try statement.finalize();
+```
+
+See [`examples/basic.zig`](examples/basic.zig) for a runnable program with
+runtime-version checking and diagnostic reporting.
+
+## Ownership and scope
+
+`Database`, `Connection`, and `Statement` are owning, non-copyable-by-contract
+values. Pass pointers to them after construction; copying an active owner would
+alias a native handle and is forbidden. Destroy statements before their
+connection and connections before their database. Finalize a statement when
+ending execution, close a connection when ending use, then call each owner's
+`deinit` exactly once in reverse acquisition order.
+
+Connections and statements are exclusive-use. The API is synchronous and adds
+no locking or hidden thread synchronization. Database sharing is limited to
+what the C API permits, and a database must outlive all of its connections.
+
+`Statement.value` returns a `Value`. Text and blob variants are allocator-owned
+copies that remain valid across later statement operations; call `Value.deinit`
+to free them. Bound text/blob slices are borrowed only for the bind call.
+Copied metadata strings are also caller-owned and must be freed with the
+statement allocator.
+
+Before an operation that can return a Turso diagnostic, its owner clears the
+previous diagnostic, then retains a copied diagnostic on failure until the
+next such operation or `deinit`. Read it with `latestDiagnostic()`. Database
+construction failures instead return an owned `ConstructionFailure`; call its
+`deinit`.
+
+See [`docs/implementation-plan.md`](docs/implementation-plan.md) for the exact
+v0 contract and [`docs/distribution.md`](docs/distribution.md) for native
+artifact requirements. This project is licensed under the [MIT License](LICENSE).

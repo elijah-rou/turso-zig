@@ -1,80 +1,74 @@
 # Native-library distribution
 
-The Zig package is a safe API layer over a native Turso library. v0 vendors the
-Turso 0.7.1 header and requires consumers to supply the matching library for
-their target explicitly.
+The Zig package is a safe API layer over a caller-supplied native Turso
+library. v0 vendors `vendor/turso-sdk-kit-0.7.1/turso.h` from Turso tag
+`v0.7.1` and requires a `turso_sdk_kit` library built from that exact tag for
+the same target ABI. A current Turso `main` or 0.8 pre-release library must not
+be substituted.
 
-## Recommended rollout
+## Implemented caller-supplied model
 
-### Phase 1: caller-supplied native library
-
-The package vendors `turso.h` from Turso v0.7.1 and requires callers to
-provide a directory containing the matching native library:
+Every compile or run command requires a directory containing the native library:
 
 ```bash
 zig build test \
-  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/lib \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
+  -Dturso-linkage=dynamic
+zig build run-example \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
   -Dturso-linkage=dynamic
 ```
 
-`-Dturso-lib-dir` is required. `-Dturso-linkage` accepts only `dynamic` or
-`static` and defaults to `dynamic`. Dynamic linking is the first exercised
-mode. Static mode is parsed and selects the static artifact, but callers remain
-responsible for its platform system-library requirements. The build uses only
-the supplied directory, does not fall back to `pkg-config` or an arbitrary
-system Turso library, and never invokes Cargo implicitly.
+`-Dturso-lib-dir` is required. `-Dturso-linkage` accepts `dynamic` or `static`
+and defaults to `dynamic`. The build restricts lookup to the supplied library
+directory, adds its runtime search path for dynamic builds, does not use
+`pkg-config`, and never invokes Cargo.
 
+<<<<<<< HEAD
 This keeps the first Zig package small and makes ABI compatibility visible. It
 is appropriate for SDK development and CI. Package discovery (`zig build --help`)
 and the artifact-free default step do not require the option; every compile or
 run step fails unless the native-library directory is supplied.
+=======
+Dynamic Ubuntu x86_64 with glibc is the only runtime-qualified distribution
+path today. Static selection requests `libturso_sdk_kit.a`, but static support
+is not complete until its Rust and platform system-library dependencies are
+enumerated and tested. No macOS or Windows runtime support is claimed.
+>>>>>>> f5da640 (docs: add synchronous SDK example and usage)
 
-### Phase 2: published, pinned platform artifacts
+The tests and example call `turso_version()` and accept only `0.7.1` followed
+by end of string, `-`, or `+`. This catches obvious mismatches but cannot prove
+full ABI identity. Artifact provenance and exact header/source matching remain
+release requirements.
 
-Publish a separate Zig package or artifact package containing prebuilt Turso
-libraries. Pin the wrapper and native artifact to the same Turso release and
-select artifacts by operating system, CPU architecture, and libc variant.
+## CI provenance
 
-At minimum, the release process needs to answer for every artifact:
+Ubuntu CI shallow-clones Turso tag `v0.7.1`, verifies that the checkout is
+exactly that tag and expected commit, byte-compares its `sdk-kit/turso.h` with
+the vendored header, and builds only the `turso_sdk_kit` package with Cargo
+under a bounded timeout. Cargo is maintainer-side CI setup, not consumer
+`build.zig` behavior. CI then sets the loader path and runs formatting, the
+full tests, the basic example, and an exact base-to-head `git diff --check` against that artifact.
 
-- which Turso source revision and Rust toolchain produced it;
-- target triple, libc baseline, linker mode, and debug/release configuration;
-- SHA-256 checksum and provenance;
-- library filename and whether it is static or dynamically loaded; and
-- required operating-system libraries and deployment instructions.
+## Future published artifacts
 
-Do not claim cross-platform support until each published artifact is exercised
-by a Zig consumer build and runtime smoke test.
+A future artifact package should pin wrapper and native source together and
+select by operating system, architecture, and libc. For every artifact, record:
 
-### Do not start with implicit Rust builds
+- Turso tag and immutable source revision;
+- Rust toolchain, target triple, libc baseline, and release profile;
+- SHA-256 checksum and build provenance;
+- dynamic/static filename and loader instructions; and
+- required operating-system libraries.
 
-Having `zig build` invoke Cargo against the full Turso workspace would couple
-consumer builds to a Rust toolchain, Cargo's dependency network/cache, and the
-host/target cross-compilation setup. It is useful for contributor automation,
-but should remain an explicit maintainer command, not the default SDK-consumer
-path.
+Do not claim a target until a Zig consumer has linked and run the local database
+smoke path there. Browser/WASM needs a separate storage and packaging design.
 
-## ABI compatibility rules
+## Ownership at the package boundary
 
-- Build the wrapper and Turso library for the same target ABI.
-- Compile against the exact `sdk-kit/turso.h` release that exported the
-  library.
-- Keep a compatibility test that compiles a small Zig translation unit against
-  the shipped header and links the shipped artifact.
-- Version any breaking wrapper API or C-ABI change deliberately. A library that
-  loads successfully can still be unsafe if the header and binary disagree.
-- Run a local database smoke test after linking: create `:memory:`, execute
-  DDL, bind a value, read it back, and deinitialize every handle.
-
-## Suggested CI matrix once artifacts exist
-
-Start with the targets Turso itself supports and can test reliably:
-
-| Platform | Architectures | Notes |
-| --- | --- | --- |
-| Linux | x86_64, aarch64 | Test GNU and musl separately if both are distributed. |
-| macOS | aarch64, x86_64 | Validate universal packaging only if it is actually shipped. |
-| Windows | x86_64, aarch64 | Test the selected MSVC ABI and DLL discovery path. |
-
-Add browser/WASM only with a deliberate WASM-specific build and storage design;
-a native C-ABI package is not automatically a browser SDK.
+The native artifact owns opaque database, connection, and statement handles;
+the Zig wrappers release them explicitly in reverse order. Row text/blob values
+and metadata are copied into caller-owned Zig allocations. Turso diagnostics
+are copied, released with `turso_str_deinit`, and retained by the relevant
+wrapper until its next fallible operation or `deinit`. Construction failures
+carry their own allocated diagnostic and require explicit deinitialization.

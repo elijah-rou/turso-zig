@@ -48,6 +48,21 @@ pub fn build(b: *std.Build) void {
     const run_sdk_tests = b.addRunArtifact(sdk_tests);
     const test_step = b.step("test", "Run SDK tests");
     test_step.dependOn(&run_sdk_tests.step);
+
+    const example_module = b.createModule(.{
+        .root_source_file = b.path("examples/basic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    example_module.addImport("turso", module);
+
+    const example = b.addExecutable(.{
+        .name = "turso-basic-example",
+        .root_module = example_module,
+    });
+    const run_example = b.addRunArtifact(example);
+    const example_step = b.step("run-example", "Run the basic synchronous SDK example");
+    example_step.dependOn(&run_example.step);
 }
 
 fn tursoLibraryPath(

@@ -1,11 +1,13 @@
 # Implementing the Zig binding
 
-## 1. Frozen v0 contract
+## 1. Implemented v0 contract
 
 v0 is an **embedded/local, synchronous** binding built with Zig 0.16.0. The
-first verified target is x86_64 Linux with glibc; other targets are unsupported
-until their matching native artifact and loader behavior pass runtime tests.
-The package supports the core prepared-statement workflow:
+first verified target is x86_64 Linux with glibc and dynamic linkage; other
+targets are unsupported until their matching native artifact and loader
+behavior pass runtime tests. Static artifact selection exists but its native
+system-library closure has not been qualified. The package supports the core
+prepared-statement workflow:
 
 - open `:memory:` or a filesystem path;
 - create a connection;
@@ -17,11 +19,12 @@ The package supports the core prepared-statement workflow:
 
 Public fallible operations return one exhaustive Zig error set. Each owning
 wrapper retains the latest Turso diagnostic as allocator-owned bytes for
-inspection until the next fallible operation or `deinit`. Before every fallible
-operation, the wrapper frees and clears its previous diagnostic. A construction
-failure has no wrapper in which to retain a message, so constructors return a
-small failure payload containing the Zig error category and the owned Turso
-diagnostic. The caller owns that payload and must deinitialize it.
+inspection until the next operation on that owner which can return a Turso
+diagnostic, or `deinit`. Before such an operation, the wrapper frees and clears
+its previous diagnostic. A construction failure has no wrapper in which to
+retain a message, so constructors return a small failure payload containing the
+Zig error category and the owned Turso diagnostic. The caller owns that payload
+and must deinitialize it.
 
 Text and blob row values are copied with the caller's allocator before another
 statement operation can invalidate the C memory. The caller explicitly
@@ -41,6 +44,15 @@ defaults to dynamic. Builds never invoke Cargo implicitly. The vendored 0.7.1
 header and a library built from Turso v0.7.1 are one ABI unit. Runtime smoke
 tests require `turso_version()` to start with the exact `0.7.1` core followed
 only by end of string, `-`, or `+`.
+
+The public surface exports `Database`, `Connection`, `Statement`, `Value`,
+`Step`, `ColumnKind`, `Error`, `ConstructionFailure`, and the explicitly
+unstable raw `c` namespace. Database configuration covers the local path and
+the optional 0.7.1 experimental-feature, VFS, and encryption strings while
+forcing `async_io = 0`. Connection methods expose prepare-first/single, busy
+timeout, autocommit, last insert rowid, close, and deinit. Statement methods
+cover positional binds, execute/step, parameter and column metadata, copied row
+values, changes, reset, finalize, and deinit.
 
 Defer cloud sync, user-defined scalar/aggregate functions, collations,
 loadable extensions, and async I/O. Each requires a separate ownership,
@@ -113,24 +125,26 @@ state-aware calls to `turso_statement_run_io`. That state machine should be a
 separate feature with its own executor integration and tests. Do not hide it in
 a blocking retry loop.
 
-## 5. Add behavioral tests
+## 5. Verification
 
-Use a temporary database or `:memory:` and test these externally visible
-contracts, in order:
+`tests/sdk_test.zig` implements the observable contract matrix: lifecycle and
+raw ABI smoke coverage; all supported values including NULL and empty
+text/blob; copied-value lifetime; row iteration and reset; metadata; parse and
+constraint diagnostics; commit/rollback state; file persistence; invalid
+indexes; close ordering; and early row-loop cleanup.
 
-1. Create/open/close and a simple DDL statement.
-2. Bind and read every supported value class, including `NULL`, empty text, and
-   an empty blob.
-3. Iterate multiple rows, then reset and reuse a statement.
-4. Report SQL and constraint failures without leaking returned diagnostics.
-5. Transactions: rollback and commit observable data changes.
-6. Invalid usage the safe API claims to reject, such as a dead wrapper or an
-   out-of-range column index.
+Run the full supported workflow with Zig 0.16.0 and a matching v0.7.1 library:
 
-For SQLite-compatible SQL semantics, add scenarios to
-`sqlite/conformance/sqlite-sqltests/` when they exercise an engine behavior.
-Keep Zig tests focused on the binding's public ownership, conversion, and error
-contract.
+```bash
+zig build test -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release -Dturso-linkage=dynamic
+zig build run-example -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release -Dturso-linkage=dynamic
+zig fmt --check build.zig src tests examples
+git diff --check
+```
+
+For SQLite-compatible SQL semantics, add scenarios to Turso's SQL conformance
+suite when they exercise engine behavior. Keep Zig tests focused on the
+binding's public ownership, conversion, and error contract.
 
 ## 6. Expand only with dedicated designs
 
