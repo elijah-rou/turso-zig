@@ -132,8 +132,8 @@ pub const Database = struct {
 
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_database_open(handle, &error_opt_out);
+        if (status == c.TURSO_OK) self.opened = true;
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
-        self.opened = true;
     }
 
     pub fn connect(self: *Database) errors.Error!Connection {
