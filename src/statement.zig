@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("c_api.zig").raw;
 const errors = @import("error.zig");
+const ownership = @import("ownership.zig");
 const Value = @import("value.zig").Value;
 
 pub const Step = enum { row, done };
@@ -17,12 +18,13 @@ pub const ColumnKind = enum {
 pub const Statement = struct {
     allocator: std.mem.Allocator,
     handle: ?*c.turso_statement_t,
-    connection_active_statements: *usize,
+    connection_owner_state: *ownership.ConnectionState,
     diagnostic: ?[]u8 = null,
     row_available: bool = false,
     finalized: bool = false,
 
     pub fn latestDiagnostic(self: *const Statement) ?[]const u8 {
+        std.debug.assert(self.handle != null);
         return self.diagnostic;
     }
 
@@ -117,7 +119,10 @@ pub const Statement = struct {
     }
 
     pub fn changes(self: *const Statement) i64 {
-        const handle = self.handle orelse return 0;
+        const handle = self.handle orelse {
+            std.debug.assert(false);
+            return 0;
+        };
         return c.turso_statement_n_change(handle);
     }
 
@@ -209,18 +214,24 @@ pub const Statement = struct {
     }
 
     pub fn deinit(self: *Statement) void {
-        const handle = self.handle orelse return;
-        std.debug.assert(self.connection_active_statements.* > 0);
+        const handle = self.handle orelse {
+            std.debug.assert(false);
+            return;
+        };
+        std.debug.assert(self.connection_owner_state.active_statements > 0);
         c.turso_statement_deinit(handle);
         self.handle = null;
-        self.connection_active_statements.* -= 1;
+        self.connection_owner_state.active_statements -= 1;
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         self.row_available = false;
         self.finalized = true;
     }
 
     fn validHandle(self: *const Statement) errors.Error!*c.turso_statement_t {
-        return self.handle orelse errors.Error.InvalidState;
+        return self.handle orelse {
+            std.debug.assert(false);
+            return errors.Error.InvalidState;
+        };
     }
 
     fn checkedColumnHandle(self: *const Statement, index: usize) errors.Error!*c.turso_statement_t {
@@ -235,6 +246,10 @@ pub const Statement = struct {
     }
 
     fn beginMutation(self: *Statement) errors.Error!*c.turso_statement_t {
+        if (self.handle == null) {
+            std.debug.assert(false);
+            return errors.Error.InvalidState;
+        }
         if (self.finalized) return errors.Error.InvalidState;
         return self.beginMutationAllowFinalized();
     }
@@ -242,7 +257,10 @@ pub const Statement = struct {
     fn beginMutationAllowFinalized(self: *Statement) errors.Error!*c.turso_statement_t {
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         self.row_available = false;
-        return self.handle orelse errors.Error.InvalidState;
+        return self.handle orelse {
+            std.debug.assert(false);
+            return errors.Error.InvalidState;
+        };
     }
 
     fn copyRowBytes(self: *const Statement, handle: *c.turso_statement_t, index: usize) errors.Error![]u8 {

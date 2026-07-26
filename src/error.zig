@@ -83,7 +83,6 @@ pub fn finishExpected(
 pub fn rejectUnexpectedDiagnostic(allocator: std.mem.Allocator, diagnostic: ?[]u8) Error!void {
     if (diagnostic) |unexpected| {
         allocator.free(unexpected);
-        std.debug.assert(false);
         return Error.UnexpectedDiagnostic;
     }
 }

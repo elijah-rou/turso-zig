@@ -44,6 +44,57 @@ test "database wrapper creates opens connects and cleans up" {
     try std.testing.expect(connection.latestDiagnostic() == null);
 }
 
+test "owner movement preserves child bookkeeping" {
+    var database = try openDatabase(":memory:");
+    try database.open();
+    var connection = try database.connect();
+    var moved_database = database;
+    try std.testing.expectEqual(@as(usize, 1), moved_database.activeConnectionCount());
+
+    var statement = try connection.prepareSingle("SELECT 1");
+    var moved_connection = connection;
+    statement.deinit();
+    try moved_connection.close();
+    moved_connection.deinit();
+    try std.testing.expectEqual(@as(usize, 0), moved_database.activeConnectionCount());
+    moved_database.deinit();
+}
+
+test "double open close and finalize return invalid state" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    try std.testing.expectError(turso.Error.InvalidState, database.open());
+    try std.testing.expectEqualStrings(
+        "database is already open",
+        database.latestDiagnostic() orelse return error.MissingDoubleOpenDiagnostic,
+    );
+
+    var connection = try database.connect();
+    defer connection.deinit();
+    var statement = try connection.prepareSingle("SELECT 1");
+    try statement.finalize();
+    try std.testing.expectError(turso.Error.InvalidState, statement.finalize());
+    statement.deinit();
+    try connection.close();
+    try std.testing.expectError(turso.Error.InvalidState, connection.close());
+}
+
+test "prepareFirst handles empty and whitespace SQL deterministically" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+
+    const empty = try connection.prepareFirst("");
+    try std.testing.expect(empty.statement == null);
+    try std.testing.expectEqual(@as(usize, 0), empty.tail_offset);
+    const whitespace = try connection.prepareFirst(" \t\r\n");
+    try std.testing.expect(whitespace.statement == null);
+    try std.testing.expectEqual(@as(usize, 0), whitespace.tail_offset);
+}
+
 test "construction and operation diagnostics are owned and replaced" {
     var result = try turso.Database.create(std.testing.allocator, .{ .path = "invalid\x00path" });
     switch (result) {
@@ -104,7 +155,6 @@ test "DDL binding stepping copied values metadata and reset" {
     try std.testing.expectEqual(@as(u64, 1), try insert.execute());
 
     var query = try connection.prepareSingle("SELECT n,r,t,b,z FROM items ORDER BY id");
-    defer query.deinit();
     try std.testing.expectEqual(@as(usize, 5), try query.columnCount());
     const column_name = try query.columnName(2);
     defer std.testing.allocator.free(column_name);
@@ -258,7 +308,6 @@ test "file persistence and early row-loop cleanup" {
         _ = try exec(&connection, "CREATE TABLE persisted(v TEXT)");
         _ = try exec(&connection, "INSERT INTO persisted VALUES ('kept'), ('second')");
         var rows = try connection.prepareSingle("SELECT v FROM persisted ORDER BY rowid");
-        defer rows.deinit();
         while (try rows.step() == .row) {
             var value = try rows.value(0);
             defer value.deinit(std.testing.allocator);
