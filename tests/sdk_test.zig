@@ -16,6 +16,83 @@ test "public ABI reports a compatible Turso SDK Kit version" {
     try std.testing.expect(!turso.isAbiCompatibleVersion("0.7.2"));
 }
 
+test "database wrapper creates, opens, connects, and cleans up in reverse order" {
+    var path = [_]u8{ ':', 'm', 'e', 'm', 'o', 'r', 'y', ':' };
+    var result = try turso.Database.create(std.testing.allocator, .{ .path = &path });
+    var database = switch (result) {
+        .success => |database| database,
+        .failure => |*failure| {
+            defer failure.deinit(std.testing.allocator);
+            std.debug.print("database construction failed: {s}\n", .{failure.diagnostic});
+            return failure.category;
+        },
+    };
+    defer database.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), database.activeConnectionCount());
+    try std.testing.expect(database.latestDiagnostic() == null);
+    @memset(&path, 'x');
+    try database.open();
+    try std.testing.expect(database.latestDiagnostic() == null);
+
+    {
+        var connection = try database.connect();
+        defer connection.deinit();
+        try std.testing.expectEqual(@as(usize, 1), database.activeConnectionCount());
+        try std.testing.expect(connection.latestDiagnostic() == null);
+    }
+    try std.testing.expectEqual(@as(usize, 0), database.activeConnectionCount());
+}
+
+test "construction failure owns its category and diagnostic" {
+    var result = try turso.Database.create(std.testing.allocator, .{ .path = "invalid\x00path" });
+    switch (result) {
+        .success => |*database| {
+            database.deinit();
+            return error.ExpectedConstructionFailure;
+        },
+        .failure => |*failure| {
+            try std.testing.expectEqual(turso.Error.InvalidConfig, failure.category);
+            try std.testing.expect(failure.diagnostic.len != 0);
+            const owned_message = failure.diagnostic;
+            try std.testing.expect(std.mem.indexOf(u8, owned_message, "NUL") != null);
+            failure.deinit(std.testing.allocator);
+            try std.testing.expectEqual(@as(usize, 0), failure.diagnostic.len);
+        },
+    }
+}
+
+test "latest database diagnostic is cleared by the next fallible operation" {
+    var result = try turso.Database.create(std.testing.allocator, .{ .path = "/proc/turso-zig-sdk/forbidden.db" });
+    var database = switch (result) {
+        .success => |database| database,
+        .failure => |*failure| {
+            defer failure.deinit(std.testing.allocator);
+            std.debug.print("database construction failed: {s}\n", .{failure.diagnostic});
+            return failure.category;
+        },
+    };
+    defer database.deinit();
+
+    try std.testing.expectError(turso.Error.IoError, database.open());
+    const first_diagnostic = database.latestDiagnostic() orelse return error.MissingDiagnostic;
+    try std.testing.expect(first_diagnostic.len != 0);
+
+    _ = database.connect() catch {};
+    const replacement = database.latestDiagnostic() orelse return error.MissingReplacementDiagnostic;
+    try std.testing.expectEqualStrings("database must be opened before connecting", replacement);
+}
+
+test "value ownership is explicit for copied text and blob" {
+    var text = turso.Value{ .text = try std.testing.allocator.dupe(u8, "owned") };
+    defer text.deinit(std.testing.allocator);
+    var blob = turso.Value{ .blob = try std.testing.allocator.dupe(u8, &.{ 0, 1, 2 }) };
+    defer blob.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("owned", text.text);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 1, 2 }, blob.blob);
+}
+
 test "unstable raw namespace exposes the pinned status and value ABI" {
     try std.testing.expectEqual(@as(c_int, 0), turso.c.TURSO_OK);
     try std.testing.expectEqual(@as(c_int, 134), turso.c.TURSO_IOERR);
