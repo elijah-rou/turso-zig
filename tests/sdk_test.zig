@@ -19,6 +19,38 @@ fn exec(connection: *turso.Connection, sql: []const u8) !u64 {
     return statement.execute();
 }
 
+const ScalarContext = struct {
+    calls: usize = 0,
+    deinits: *usize,
+    mode: enum { echo, replacement },
+};
+
+fn scalarCall(context: *ScalarContext, args: turso.CallbackArgs) turso.CallbackResult {
+    context.calls += 1;
+    return switch (context.mode) {
+        .replacement => .{ .integer = 99 },
+        .echo => if (args.values.len == 0) .null else switch (args.values[0]) {
+            .null => .null,
+            .integer => |value| .{ .integer = value },
+            .float => |value| .{ .float = value },
+            .text => |value| .{ .text = value },
+            .blob => |value| .{ .blob = value },
+            .managed_error => |value| .{ .managed_error = value },
+        },
+    };
+}
+
+fn scalarDeinit(context: *ScalarContext) void {
+    context.deinits.* += 1;
+}
+
+fn queryValue(connection: *turso.Connection, sql: []const u8) !turso.Value {
+    var statement = try connection.prepareSingle(sql);
+    defer statement.deinit();
+    try std.testing.expectEqual(turso.Step.row, try statement.step());
+    return statement.value(0);
+}
+
 test "public version accessor reports a compatible Turso SDK Kit version" {
     const runtime_version = try turso.version();
     try std.testing.expect(turso.isAbiCompatibleVersion(runtime_version));
@@ -341,6 +373,117 @@ test "file persistence and early row-loop cleanup" {
         var count = try rows.value(0);
         defer count.deinit(std.testing.allocator);
         try std.testing.expectEqual(@as(i64, 2), count.integer);
+    }
+}
+
+test "managed scalar callbacks cover arity options and every SQL value kind" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+
+    var deinits: usize = 0;
+    try connection.registerScalarFunction(
+        "zig_echo",
+        .{ .fixed = 1 },
+        true,
+        turso.ScalarFunction(ScalarContext){
+            .context = .{ .deinits = &deinits, .mode = .echo },
+            .call = scalarCall,
+            .deinit = scalarDeinit,
+        },
+    );
+
+    const cases = [_]struct { sql: []const u8, expected: turso.Value }{
+        .{ .sql = "SELECT zig_echo(NULL)", .expected = .null },
+        .{ .sql = "SELECT zig_echo(-42)", .expected = .{ .integer = -42 } },
+        .{ .sql = "SELECT zig_echo(1.25)", .expected = .{ .real = 1.25 } },
+        .{ .sql = "SELECT zig_echo('a' || char(0) || 'b')", .expected = .{ .text = @constCast("a\x00b") } },
+        .{ .sql = "SELECT zig_echo(json('{\"a\":1}'))", .expected = .{ .text = @constCast("{\"a\":1}") } },
+        .{ .sql = "SELECT zig_echo(x'0001ff')", .expected = .{ .blob = @constCast(&[_]u8{ 0, 1, 255 }) } },
+        .{ .sql = "SELECT zig_echo('')", .expected = .{ .text = @constCast("") } },
+        .{ .sql = "SELECT zig_echo(x'')", .expected = .{ .blob = @constCast(&[_]u8{}) } },
+    };
+    for (cases) |case| {
+        var actual = try queryValue(&connection, case.sql);
+        defer actual.deinit(std.testing.allocator);
+        switch (case.expected) {
+            .null => try std.testing.expect(actual == .null),
+            .integer => |expected| try std.testing.expectEqual(expected, actual.integer),
+            .real => |expected| try std.testing.expectEqual(expected, actual.real),
+            .text => |expected| try std.testing.expectEqualStrings(expected, actual.text),
+            .blob => |expected| try std.testing.expectEqualSlices(u8, expected, actual.blob),
+        }
+    }
+
+    try connection.registerScalarFunction(
+        "zig_count",
+        .variadic,
+        false,
+        turso.ScalarFunction(ScalarContext){
+            .context = .{ .deinits = &deinits, .mode = .echo },
+            .call = scalarCall,
+            .deinit = scalarDeinit,
+        },
+    );
+    var zero = try queryValue(&connection, "SELECT zig_count()");
+    defer zero.deinit(std.testing.allocator);
+    try std.testing.expect(zero == .null);
+    try connection.unregisterFunction("zig_count");
+    try std.testing.expectEqual(@as(usize, 1), deinits);
+}
+
+test "managed scalar replacement unregister and connection teardown destroy contexts exactly once" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var deinits: usize = 0;
+    {
+        var connection = try database.connect();
+        defer connection.deinit();
+        try connection.registerScalarFunction("zig_life", .{ .fixed = 0 }, true, turso.ScalarFunction(ScalarContext){
+            .context = .{ .deinits = &deinits, .mode = .echo },
+            .call = scalarCall,
+            .deinit = scalarDeinit,
+        });
+        try connection.registerScalarFunction("zig_life", .{ .fixed = 0 }, true, turso.ScalarFunction(ScalarContext){
+            .context = .{ .deinits = &deinits, .mode = .replacement },
+            .call = scalarCall,
+            .deinit = scalarDeinit,
+        });
+        try std.testing.expectEqual(@as(usize, 1), deinits);
+        var value = try queryValue(&connection, "SELECT zig_life()");
+        defer value.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(i64, 99), value.integer);
+    }
+    try std.testing.expectEqual(@as(usize, 2), deinits);
+}
+
+test "managed scalar validates names and arities before taking ownership" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var deinits: usize = 0;
+    const function = turso.ScalarFunction(ScalarContext){
+        .context = .{ .deinits = &deinits, .mode = .echo },
+        .call = scalarCall,
+        .deinit = scalarDeinit,
+    };
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerScalarFunction("", .variadic, false, function));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerScalarFunction("bad\x00name", .variadic, false, function));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerScalarFunction("bad\xff", .variadic, false, function));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerScalarFunction("too_many", .{ .fixed = 128 }, false, function));
+    try std.testing.expectEqual(@as(usize, 0), deinits);
+}
+
+test "extension result codes and text subtypes are exhaustive" {
+    try std.testing.expectEqual(@as(usize, 22), @typeInfo(turso.ExtensionResultCode).@"enum".fields.len);
+    try std.testing.expectEqual(@as(usize, 2), @typeInfo(turso.ExtensionTextSubtype).@"enum".fields.len);
+    inline for (@typeInfo(turso.ExtensionResultCode).@"enum".fields, 0..) |field, expected| {
+        try std.testing.expectEqual(expected, field.value);
     }
 }
 
