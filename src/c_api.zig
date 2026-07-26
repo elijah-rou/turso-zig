@@ -21,6 +21,12 @@ comptime {
     assertConstant("TURSO_CORRUPT", raw.TURSO_CORRUPT, 133);
     assertConstant("TURSO_IOERR", raw.TURSO_IOERR, 134);
 
+    assertConstant("TURSO_TRACING_LEVEL_ERROR", raw.TURSO_TRACING_LEVEL_ERROR, 1);
+    assertConstant("TURSO_TRACING_LEVEL_WARN", raw.TURSO_TRACING_LEVEL_WARN, 2);
+    assertConstant("TURSO_TRACING_LEVEL_INFO", raw.TURSO_TRACING_LEVEL_INFO, 3);
+    assertConstant("TURSO_TRACING_LEVEL_DEBUG", raw.TURSO_TRACING_LEVEL_DEBUG, 4);
+    assertConstant("TURSO_TRACING_LEVEL_TRACE", raw.TURSO_TRACING_LEVEL_TRACE, 5);
+
     assertConstant("TURSO_TYPE_UNKNOWN", raw.TURSO_TYPE_UNKNOWN, 0);
     assertConstant("TURSO_TYPE_INTEGER", raw.TURSO_TYPE_INTEGER, 1);
     assertConstant("TURSO_TYPE_REAL", raw.TURSO_TYPE_REAL, 2);

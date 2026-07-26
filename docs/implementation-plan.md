@@ -45,9 +45,15 @@ header and a library built from Turso v0.7.1 are one ABI unit. Runtime smoke
 tests require `turso_version()` to start with the exact `0.7.1` core followed
 only by end of string, `-`, or `+`.
 
-The public surface exports `Database`, `Connection`, `Statement`, `Value`,
-`Step`, `ColumnKind`, `Error`, `ConstructionFailure`, and the explicitly
-unstable raw `c` namespace. Database configuration covers the local path and
+The public surface exports `version`, `setup`, `SetupConfig`, `SetupResult`,
+`SetupFailure`, `Logger`, `Log`, `LogLevel`, `Database`, `Connection`,
+`Statement`, `Value`, `Step`, `ColumnKind`, `Error`, `ConstructionFailure`, and
+the explicitly unstable raw `c` namespace. Setup validates bounded strings and
+returns owned native diagnostics. Its first successful process-global level
+wins; later successful setup calls may replace only the process-lifetime plain
+logger function pointer. Logger calls may be concurrent, record slices are
+invocation-borrowed, and malformed or same-thread reentrant records are
+dropped. Database configuration covers the local path and
 the optional 0.7.1 experimental-feature, VFS, and encryption strings while
 forcing `async_io = 0`. Connection methods expose prepare-first/single, busy
 timeout, autocommit, last insert rowid, close, and deinit. Statement methods
@@ -55,8 +61,9 @@ cover positional binds, execute/step, parameter and column metadata, copied row
 values, changes, reset, finalize, and deinit.
 
 Defer cloud sync, user-defined scalar/aggregate functions, collations,
-loadable extensions, and async I/O. Each requires a separate ownership,
-scheduler, or trust-boundary design.
+loadable extensions, and async I/O. The process-global logger does not imply a
+general callback ownership design. Each deferred area requires a separate
+ownership, scheduler, or trust-boundary design.
 
 ## 2. Treat `turso.h` as the ABI source of truth
 

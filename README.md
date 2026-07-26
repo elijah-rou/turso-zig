@@ -1,9 +1,10 @@
 # Turso for Zig
 
 An early synchronous Zig 0.16.0 SDK for Turso embedded/local databases. The
-implemented API opens local databases, prepares statements, binds positional
-values, executes SQL, streams rows, copies typed values, exposes metadata and
-transaction state, and retains native SQL diagnostics.
+implemented API exposes the runtime version and process-global tracing setup,
+opens local databases, prepares statements, binds positional values, executes
+SQL, streams rows, copies typed values, exposes metadata and transaction state,
+and retains native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
 macOS, Windows, cloud sync, callbacks, extensions, and async I/O are not yet
@@ -34,6 +35,40 @@ library closure is not enumerated or supported yet. `build.zig` never invokes
 Cargo, falls back to `pkg-config`, or searches for an arbitrary system Turso
 library. Tests and the example reject a runtime version outside the 0.7.1 ABI
 version family (`0.7.1`, `0.7.1-*`, or `0.7.1+*`).
+
+## Setup and logging
+
+`version()` returns the native process-lifetime version string after validating
+the native pointer and a bounded terminator. `setup(allocator, config)` returns
+either `.success` or an allocator-owned `SetupFailure`; deinitialize failures
+with the same allocator. `log_level` accepts `error`, `warn`, `info`, `debug`,
+or `trace` and rejects embedded NUL bytes.
+
+Setup is process-global. The first successful call fixes the native level
+filter; later successful calls may replace the logger but cannot change that
+filter. `Logger` is a plain process-lifetime function pointer with no captured
+context. Native threads may call it concurrently. Each `Log` string slice is
+borrowed only for that invocation, so copy data that must outlive the call. A
+logger must be thread-safe, non-panicking, and must not retain borrowed slices.
+The wrapper drops malformed, unknown-level, and same-thread reentrant records.
+
+```zig
+fn logger(log: turso.Log) void {
+    std.debug.print("[{s}] {s}\n", .{ @tagName(log.level), log.message });
+}
+
+var setup_result = try turso.setup(allocator, .{
+    .log_level = "info",
+    .logger = logger,
+});
+switch (setup_result) {
+    .success => {},
+    .failure => |*failure| {
+        defer failure.deinit(allocator);
+        return failure.category;
+    },
+}
+```
 
 ## Basic use
 

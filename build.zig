@@ -49,6 +49,27 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run SDK tests");
     test_step.dependOn(&run_sdk_tests.step);
 
+    const isolated_tests = [_]struct { name: []const u8, path: []const u8 }{
+        .{ .name = "turso-setup-invalid-test", .path = "tests/setup_invalid.zig" },
+        .{ .name = "turso-setup-logger-test", .path = "tests/setup_logger.zig" },
+        .{ .name = "turso-setup-first-level-test", .path = "tests/setup_first_level.zig" },
+        .{ .name = "turso-setup-reentry-test", .path = "tests/setup_reentry.zig" },
+    };
+    for (isolated_tests) |isolated_test| {
+        const isolated_module = b.createModule(.{
+            .root_source_file = b.path(isolated_test.path),
+            .target = target,
+            .optimize = optimize,
+        });
+        isolated_module.addImport("turso", module);
+        const executable = b.addExecutable(.{
+            .name = isolated_test.name,
+            .root_module = isolated_module,
+        });
+        const run = b.addRunArtifact(executable);
+        test_step.dependOn(&run.step);
+    }
+
     const example_module = b.createModule(.{
         .root_source_file = b.path("examples/basic.zig"),
         .target = target,
