@@ -18,8 +18,14 @@ pub const Error = error{
     Corrupt,
     IoError,
     InvalidConfig,
+    InvalidArgument,
     InvalidHandle,
+    InvalidIndex,
     InvalidState,
+    InvalidValue,
+    TrailingSql,
+    UnknownColumnKind,
+    UnknownValueKind,
     UnexpectedDiagnostic,
     UnknownStatus,
     OutOfMemory,
@@ -56,20 +62,30 @@ pub fn finishOperation(
     error_opt_out: [*c]const u8,
     diagnostic: *?[]u8,
 ) Error!void {
+    return finishExpected(allocator, status, c.TURSO_OK, error_opt_out, diagnostic);
+}
+
+pub fn finishExpected(
+    allocator: std.mem.Allocator,
+    status: c.turso_status_code_t,
+    expected: c.turso_status_code_t,
+    error_opt_out: [*c]const u8,
+    diagnostic: *?[]u8,
+) Error!void {
     std.debug.assert(diagnostic.* == null);
     const copied = try copyAndFreeDiagnostic(allocator, error_opt_out);
-
-    if (status == c.TURSO_OK) {
-        if (copied) |unexpected| {
-            allocator.free(unexpected);
-            std.debug.assert(false);
-            return Error.UnexpectedDiagnostic;
-        }
-        return;
-    }
+    if (status == expected) return rejectUnexpectedDiagnostic(allocator, copied);
 
     diagnostic.* = copied;
     return statusToError(status);
+}
+
+pub fn rejectUnexpectedDiagnostic(allocator: std.mem.Allocator, diagnostic: ?[]u8) Error!void {
+    if (diagnostic) |unexpected| {
+        allocator.free(unexpected);
+        std.debug.assert(false);
+        return Error.UnexpectedDiagnostic;
+    }
 }
 
 pub fn statusToError(status: c.turso_status_code_t) Error {

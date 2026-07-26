@@ -27,6 +27,13 @@ comptime {
     assertConstant("TURSO_TYPE_TEXT", raw.TURSO_TYPE_TEXT, 3);
     assertConstant("TURSO_TYPE_BLOB", raw.TURSO_TYPE_BLOB, 4);
     assertConstant("TURSO_TYPE_NULL", raw.TURSO_TYPE_NULL, 5);
+
+    assertConstant("TURSO_COLUMN_KIND_NONE", raw.TURSO_COLUMN_KIND_NONE, -1);
+    assertConstant("TURSO_COLUMN_KIND_BUILTIN", raw.TURSO_COLUMN_KIND_BUILTIN, 0);
+    assertConstant("TURSO_COLUMN_KIND_CUSTOM", raw.TURSO_COLUMN_KIND_CUSTOM, 1);
+    assertConstant("TURSO_COLUMN_KIND_DOMAIN", raw.TURSO_COLUMN_KIND_DOMAIN, 2);
+    assertConstant("TURSO_COLUMN_KIND_STRUCT", raw.TURSO_COLUMN_KIND_STRUCT, 3);
+    assertConstant("TURSO_COLUMN_KIND_UNION", raw.TURSO_COLUMN_KIND_UNION, 4);
 }
 
 fn assertConstant(comptime name: []const u8, actual: c_int, expected: c_int) void {

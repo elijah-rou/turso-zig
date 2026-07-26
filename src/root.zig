@@ -6,6 +6,10 @@ pub const Error = @import("error.zig").Error;
 pub const Value = @import("value.zig").Value;
 pub const Database = @import("database.zig").Database;
 pub const Connection = @import("connection.zig").Connection;
+pub const PrepareFirstResult = @import("connection.zig").PrepareFirstResult;
+pub const Statement = @import("statement.zig").Statement;
+pub const Step = @import("statement.zig").Step;
+pub const ColumnKind = @import("statement.zig").ColumnKind;
 pub const ConstructionFailure = @import("database.zig").ConstructionFailure;
 
 pub const abi_version = "0.7.1";
