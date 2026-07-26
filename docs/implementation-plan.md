@@ -1,9 +1,11 @@
 # Implementing the Zig binding
 
-## 1. Fix the v0 contract before writing FFI
+## 1. Frozen v0 contract
 
-The initial package should be an **embedded/local** database binding, matching
-the core prepared-statement workflow:
+v0 is an **embedded/local, synchronous** binding built with Zig 0.16.0. The
+first verified target is x86_64 Linux with glibc; other targets are unsupported
+until their matching native artifact and loader behavior pass runtime tests.
+The package supports the core prepared-statement workflow:
 
 - open `:memory:` or a filesystem path;
 - create a connection;
@@ -11,27 +13,43 @@ the core prepared-statement workflow:
 - bind `null`, integers, floats, text, and blobs by position;
 - execute mutations or step query rows;
 - expose row values as a tagged Zig union; and
-- release statement, connection, and database handles deterministically.
+- release statement, connection, and database handles explicitly.
+
+Public fallible operations return one exhaustive Zig error set. Each owning
+wrapper retains the latest Turso diagnostic as allocator-owned bytes for
+inspection until the next fallible operation or `deinit`. Before every fallible
+operation, the wrapper frees and clears its previous diagnostic. A construction
+failure has no wrapper in which to retain a message, so constructors return a
+small failure payload containing the Zig error category and the owned Turso
+diagnostic. The caller owns that payload and must deinitialize it.
+
+Text and blob row values are copied with the caller's allocator before another
+statement operation can invalidate the C memory. The caller explicitly
+deinitializes copied values. Bound text and blob slices remain caller-owned and
+need only remain valid for the binding call.
+
+Database handles may be shared only where the C contract permits. Connections
+and statements are exclusive-use and the Zig API adds no hidden synchronization.
+All owning handles require explicit cleanup in reverse acquisition order.
+Statements must be deinitialized before their connection, and connections
+before their database. Programmer misuse such as use after `deinit` fails
+loudly in safe builds.
+
+The native library is caller-supplied through required
+`-Dturso-lib-dir=<path>`. `-Dturso-linkage=dynamic|static` selects linkage and
+defaults to dynamic. Builds never invoke Cargo implicitly. The vendored 0.7.1
+header and a library built from Turso v0.7.1 are one ABI unit. Runtime smoke
+tests require `turso_version()` to start with the exact `0.7.1` core followed
+only by end of string, `-`, or `+`.
 
 Defer cloud sync, user-defined scalar/aggregate functions, collations,
-loadable extensions, and an async facade. Each introduces callbacks, retained
-context, or scheduler concerns that should not obscure the basic ownership
-model.
-
-Before implementation, choose and document:
-
-1. Confirm the scaffold's minimum Zig version and the supported target triples.
-2. Whether public methods return errors only, or errors plus Turso's diagnostic
-   message.
-3. Whether rows borrow statement memory or copy text/blob data. For v0, copy
-   them. This is safer and matches the C ABI lifetime.
-4. The concurrency contract. The C header says connections and statements are
-   exclusive-use handles. Do not market the Zig wrapper as thread-safe without
-   an explicit synchronization design.
+loadable extensions, and async I/O. Each requires a separate ownership,
+scheduler, or trust-boundary design.
 
 ## 2. Treat `turso.h` as the ABI source of truth
 
-Read Turso's [`sdk-kit/turso.h`](https://github.com/tursodatabase/turso/blob/main/sdk-kit/turso.h)
+Read the vendored header copied unchanged from Turso
+[`v0.7.1`](https://github.com/tursodatabase/turso/blob/v0.7.1/sdk-kit/turso.h)
 beside any FFI work. The relevant groups are:
 
 | Need | C ABI entry points |
