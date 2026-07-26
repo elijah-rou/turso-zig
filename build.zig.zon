@@ -1,0 +1,20 @@
+.{
+    .name = .turso,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x18fb0b7ecb7e1675,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "LICENSE",
+        "README.md",
+        "SECURITY.md",
+        "docs",
+        "examples",
+        "src",
+        "vendor",
+    },
+}

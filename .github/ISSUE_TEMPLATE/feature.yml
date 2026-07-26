@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a public SDK capability or repository improvement.
+title: "proposal: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user problem, not only the proposed API.
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Proposed contract
+      description: Show the smallest useful Zig API or repository behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: abi
+    attributes:
+      label: ABI and ownership implications
+      description: Identify required turso.h functions, allocation rules, callbacks, and concurrency constraints.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: true

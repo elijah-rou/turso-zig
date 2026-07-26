@@ -1,0 +1,49 @@
+name: Bug report
+description: Report incorrect behavior in the Zig SDK.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not report security vulnerabilities here. Follow SECURITY.md.
+  - type: input
+    id: revision
+    attributes:
+      label: SDK version or commit
+      placeholder: Commit SHA or release version
+    validations:
+      required: true
+  - type: input
+    id: zig-version
+    attributes:
+      label: Zig version
+      placeholder: Output of zig version
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Target
+      placeholder: OS, architecture, and libc/ABI
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include code, SQL, build command, and native Turso library revision.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include complete errors or logs with credentials removed.
+    validations:
+      required: true
