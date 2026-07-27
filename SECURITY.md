@@ -2,8 +2,18 @@
 
 ## Supported versions
 
-No released version is currently supported. This repository is pre-release
-scaffolding and must not be treated as production-ready.
+No released version is currently supported. The current pre-release binding
+covers the complete pinned Turso SDK Kit 0.7.1 ABI, but has not received a
+production security audit or compatibility guarantee beyond that exact ABI.
+
+The safe API validates ownership, diagnostics, callback boundaries, and native
+status conversion. It cannot make the linked Turso engine, application-provided
+callbacks, VFS implementations, or loaded native extensions memory-safe.
+`Connection.loadExtensionUnsafe` executes arbitrary native code with the
+process's privileges and provides no sandbox, transactional rollback, or safe
+unload. Treat the native library path, extension paths, callback code, database
+files, and encryption keys as trust boundaries. Raw declarations under
+`turso.c` remain unstable and unsafe despite parity classification.
 
 ## Reporting a vulnerability
 

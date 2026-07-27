@@ -303,89 +303,144 @@ fn apiName(api: ZigApi) []const u8 {
     };
 }
 
+fn assertExactFunction(comptime actual: anytype, comptime Expected: type, comptime name: []const u8) void {
+    if (@TypeOf(actual) != Expected) @compileError(name ++ " signature mismatch");
+}
+
+fn assertGenericFunction(
+    comptime actual: anytype,
+    comptime ExpectedReturn: type,
+    comptime expected_parameters: anytype,
+    comptime name: []const u8,
+) void {
+    const signature = @typeInfo(@TypeOf(actual)).@"fn";
+    if (!signature.is_generic) @compileError(name ++ " must remain generic");
+    if (signature.calling_convention != .auto) @compileError(name ++ " calling convention mismatch");
+    if (signature.return_type.? != ExpectedReturn) @compileError(name ++ " return type mismatch");
+    if (signature.params.len != expected_parameters.len) @compileError(name ++ " parameter count mismatch");
+    inline for (expected_parameters, 0..) |Expected, index| {
+        if (Expected) |expected| {
+            if (signature.params[index].type.? != expected) @compileError(name ++ " parameter type mismatch");
+        } else if (!signature.params[index].is_generic) {
+            @compileError(name ++ " generic parameter mismatch");
+        }
+    }
+}
+
+fn assertTypeCategory(comptime Actual: type, comptime category: std.builtin.TypeId, comptime name: []const u8) void {
+    if (std.meta.activeTag(@typeInfo(Actual)) != category) @compileError(name ++ " type category mismatch");
+}
+
 fn validateApiReference(api: ZigApi) void {
     switch (api) {
-        .connection_close => _ = @TypeOf(Connection.close),
-        .connection_deinit => _ = @TypeOf(Connection.deinit),
-        .connection_set_extension_loading => _ = @TypeOf(Connection.setSqlExtensionLoadingEnabled),
-        .connection_autocommit => _ = @TypeOf(Connection.autocommit),
-        .connection_last_insert_rowid => _ = @TypeOf(Connection.lastInsertRowid),
-        .connection_load_extension_unsafe => _ = @TypeOf(Connection.loadExtensionUnsafe),
-        .connection_prepare_first => _ = @TypeOf(Connection.prepareFirst),
-        .connection_prepare_single => _ = @TypeOf(Connection.prepareSingle),
-        .connection_register_aggregate => _ = @TypeOf(Connection.registerAggregateFunction),
-        .connection_register_collation => _ = @TypeOf(Connection.registerCollation),
-        .connection_register_scalar => _ = @TypeOf(Connection.registerScalarFunction),
-        .connection_set_busy_timeout => _ = @TypeOf(Connection.setBusyTimeoutMs),
-        .connection_unregister_collation => _ = @TypeOf(Connection.unregisterCollation),
-        .connection_unregister_function => _ = @TypeOf(Connection.unregisterFunction),
-        .database_connect => _ = @TypeOf(Database.connect),
-        .database_deinit => _ = @TypeOf(Database.deinit),
-        .database_create => _ = @TypeOf(Database.create),
-        .database_open => _ = @TypeOf(Database.open),
-        .database_open_progress => _ = @TypeOf(Database.openProgress),
-        .setup => _ = @TypeOf(setup.setup),
-        .statement_bind_blob => _ = @TypeOf(Statement.bindBlob),
-        .statement_bind_real => _ = @TypeOf(Statement.bindReal),
-        .statement_bind_integer => _ = @TypeOf(Statement.bindInteger),
-        .statement_bind_null => _ = @TypeOf(Statement.bindNull),
-        .statement_bind_text => _ = @TypeOf(Statement.bindText),
-        .statement_column_array_dimensions => _ = @TypeOf(Statement.columnArrayDimensions),
-        .statement_column_base_type => _ = @TypeOf(Statement.columnBaseType),
-        .statement_column_count => _ = @TypeOf(Statement.columnCount),
-        .statement_column_declared_name => _ = @TypeOf(Statement.columnDeclaredName),
-        .statement_column_declared_type => _ = @TypeOf(Statement.columnDeclaredType),
-        .statement_column_kind => _ = @TypeOf(Statement.columnKind),
-        .statement_column_name => _ = @TypeOf(Statement.columnName),
-        .statement_deinit => _ = @TypeOf(Statement.deinit),
-        .statement_execute => _ = @TypeOf(Statement.execute),
-        .statement_execute_progress => _ = @TypeOf(Statement.executeProgress),
-        .statement_finalize => _ = @TypeOf(Statement.finalize),
-        .statement_finalize_progress => _ = @TypeOf(Statement.finalizeProgress),
-        .statement_changes => _ = @TypeOf(Statement.changes),
-        .statement_named_position => _ = @TypeOf(Statement.namedPosition),
-        .statement_parameter_name => _ = @TypeOf(Statement.parameterName),
-        .statement_parameter_count => _ = @TypeOf(Statement.parameterCount),
-        .statement_reset => _ = @TypeOf(Statement.reset),
-        .statement_value => _ = @TypeOf(Statement.value),
-        .statement_run_io => _ = @TypeOf(Statement.runIo),
-        .statement_step => _ = @TypeOf(Statement.step),
-        .statement_step_progress => _ = @TypeOf(Statement.stepProgress),
-        .copy_and_free_diagnostic => _ = @TypeOf(errors.copyAndFreeDiagnostic),
-        .version => _ = @TypeOf(setup.version),
-        .aggregate_state_carrier => _ = @TypeOf(aggregate_function.StateBox(void)),
-        .aggregate_final_trampoline => _ = @TypeOf(aggregate_function.finalTrampoline(void, void)),
-        .aggregate_init_trampoline => _ = @TypeOf(aggregate_function.initTrampoline(void, void)),
-        .aggregate_step_trampoline => _ = @TypeOf(aggregate_function.stepTrampoline(void, void)),
-        .collation_compare_trampoline => _ = @TypeOf(collation.compareTrampoline(void)),
-        .column_kind => _ = @TypeOf(statement.ColumnKind),
-        .setup_config => _ = @TypeOf(setup.SetupConfig),
-        .logger_trampoline => _ = @TypeOf(setup.loggerTrampoline),
-        .connection_type => _ = @TypeOf(Connection),
-        .scalar_context_destructor => _ = @TypeOf(connection.scalarContextDestructor(void)),
-        .aggregate_context_destructor => _ = @TypeOf(aggregate_function.contextDestructor(void, void)),
-        .aggregate_state_destructor => _ = @TypeOf(aggregate_function.stateDestructor(void, void)),
-        .collation_context_destructor => _ = @TypeOf(collation.contextDestructor(void)),
-        .database_config => _ = @TypeOf(Database.Config),
-        .database_type => _ = @TypeOf(Database),
-        .decode_callback_args => _ = @TypeOf(callback_value.decodeArgs),
-        .managed_error => _ = @TypeOf(callback_value.ManagedError),
-        .encode_callback_result => _ = @TypeOf(callback_value.encodeResult),
-        .extension_result_code => _ = @TypeOf(callback_value.ExtensionResultCode),
-        .extension_text_subtype => _ = @TypeOf(callback_value.ExtensionTextSubtype),
-        .borrowed_text => _ = @TypeOf(callback_value.BorrowedText),
-        .log => _ = @TypeOf(setup.Log),
-        .scalar_trampoline => _ = @TypeOf(connection.scalarTrampoline(void)),
-        .unused_slice_carrier => _ = @TypeOf(void),
-        .statement_type => _ = @TypeOf(Statement),
-        .status_to_error => _ = @TypeOf(errors.statusToError),
-        .open_progress => _ = @TypeOf(progress.OpenProgress),
-        .execute_progress => _ = @TypeOf(progress.ExecuteProgress),
-        .step_progress => _ = @TypeOf(progress.StepProgress),
-        .finalize_progress => _ = @TypeOf(progress.FinalizeProgress),
-        .log_level => _ = @TypeOf(setup.LogLevel),
-        .value => _ = @TypeOf(Value),
-        .destroy_callback_result => _ = @TypeOf(callback_value.destroyResult),
+        .connection_close => assertExactFunction(Connection.close, fn (*Connection) errors.Error!void, "Connection.close"),
+        .connection_deinit => assertExactFunction(Connection.deinit, fn (*Connection) void, "Connection.deinit"),
+        .connection_set_extension_loading => assertExactFunction(Connection.setSqlExtensionLoadingEnabled, fn (*Connection, bool) errors.Error!void, "Connection.setSqlExtensionLoadingEnabled"),
+        .connection_autocommit => assertExactFunction(Connection.autocommit, fn (*const Connection) bool, "Connection.autocommit"),
+        .connection_last_insert_rowid => assertExactFunction(Connection.lastInsertRowid, fn (*const Connection) i64, "Connection.lastInsertRowid"),
+        .connection_load_extension_unsafe => assertExactFunction(Connection.loadExtensionUnsafe, fn (*Connection, []const u8) errors.Error!void, "Connection.loadExtensionUnsafe"),
+        .connection_prepare_first => assertExactFunction(Connection.prepareFirst, fn (*Connection, []const u8) errors.Error!connection.PrepareFirstResult, "Connection.prepareFirst"),
+        .connection_prepare_single => assertExactFunction(Connection.prepareSingle, fn (*Connection, []const u8) errors.Error!Statement, "Connection.prepareSingle"),
+        .connection_register_aggregate => assertGenericFunction(Connection.registerAggregateFunction, errors.Error!void, .{ @as(?type, *Connection), @as(?type, []const u8), @as(?type, callback_value.Arity), @as(?type, null) }, "Connection.registerAggregateFunction"),
+        .connection_register_collation => assertGenericFunction(Connection.registerCollation, errors.Error!void, .{ @as(?type, *Connection), @as(?type, []const u8), @as(?type, null) }, "Connection.registerCollation"),
+        .connection_register_scalar => assertGenericFunction(Connection.registerScalarFunction, errors.Error!void, .{ @as(?type, *Connection), @as(?type, []const u8), @as(?type, callback_value.Arity), @as(?type, bool), @as(?type, null) }, "Connection.registerScalarFunction"),
+        .connection_set_busy_timeout => assertExactFunction(Connection.setBusyTimeoutMs, fn (*Connection, u64) errors.Error!void, "Connection.setBusyTimeoutMs"),
+        .connection_unregister_collation => assertExactFunction(Connection.unregisterCollation, fn (*Connection, []const u8) errors.Error!void, "Connection.unregisterCollation"),
+        .connection_unregister_function => assertExactFunction(Connection.unregisterFunction, fn (*Connection, []const u8) errors.Error!void, "Connection.unregisterFunction"),
+        .database_connect => assertExactFunction(Database.connect, fn (*Database) errors.Error!Connection, "Database.connect"),
+        .database_deinit => assertExactFunction(Database.deinit, fn (*Database) void, "Database.deinit"),
+        .database_create => assertExactFunction(Database.create, fn (std.mem.Allocator, Database.Config) std.mem.Allocator.Error!Database.ConstructionResult, "Database.create"),
+        .database_open => assertExactFunction(Database.open, fn (*Database) errors.Error!void, "Database.open"),
+        .database_open_progress => assertExactFunction(Database.openProgress, fn (*Database) errors.Error!progress.OpenProgress, "Database.openProgress"),
+        .setup => assertExactFunction(setup.setup, fn (std.mem.Allocator, setup.SetupConfig) std.mem.Allocator.Error!setup.SetupResult, "setup"),
+        .statement_bind_blob => assertExactFunction(Statement.bindBlob, fn (*Statement, usize, []const u8) errors.Error!void, "Statement.bindBlob"),
+        .statement_bind_real => assertExactFunction(Statement.bindReal, fn (*Statement, usize, f64) errors.Error!void, "Statement.bindReal"),
+        .statement_bind_integer => assertExactFunction(Statement.bindInteger, fn (*Statement, usize, i64) errors.Error!void, "Statement.bindInteger"),
+        .statement_bind_null => assertExactFunction(Statement.bindNull, fn (*Statement, usize) errors.Error!void, "Statement.bindNull"),
+        .statement_bind_text => assertExactFunction(Statement.bindText, fn (*Statement, usize, []const u8) errors.Error!void, "Statement.bindText"),
+        .statement_column_array_dimensions => assertExactFunction(Statement.columnArrayDimensions, fn (*const Statement, usize) errors.Error!u32, "Statement.columnArrayDimensions"),
+        .statement_column_base_type => assertExactFunction(Statement.columnBaseType, fn (*const Statement, usize) errors.Error!?[]u8, "Statement.columnBaseType"),
+        .statement_column_count => assertExactFunction(Statement.columnCount, fn (*const Statement) errors.Error!usize, "Statement.columnCount"),
+        .statement_column_declared_name => assertExactFunction(Statement.columnDeclaredName, fn (*const Statement, usize) errors.Error!?[]u8, "Statement.columnDeclaredName"),
+        .statement_column_declared_type => assertExactFunction(Statement.columnDeclaredType, fn (*const Statement, usize) errors.Error!?[]u8, "Statement.columnDeclaredType"),
+        .statement_column_kind => assertExactFunction(Statement.columnKind, fn (*const Statement, usize) errors.Error!statement.ColumnKind, "Statement.columnKind"),
+        .statement_column_name => assertExactFunction(Statement.columnName, fn (*const Statement, usize) errors.Error![]u8, "Statement.columnName"),
+        .statement_deinit => assertExactFunction(Statement.deinit, fn (*Statement) void, "Statement.deinit"),
+        .statement_execute => assertExactFunction(Statement.execute, fn (*Statement) errors.Error!u64, "Statement.execute"),
+        .statement_execute_progress => assertExactFunction(Statement.executeProgress, fn (*Statement) errors.Error!progress.ExecuteProgress, "Statement.executeProgress"),
+        .statement_finalize => assertExactFunction(Statement.finalize, fn (*Statement) errors.Error!void, "Statement.finalize"),
+        .statement_finalize_progress => assertExactFunction(Statement.finalizeProgress, fn (*Statement) errors.Error!progress.FinalizeProgress, "Statement.finalizeProgress"),
+        .statement_changes => assertExactFunction(Statement.changes, fn (*const Statement) i64, "Statement.changes"),
+        .statement_named_position => assertExactFunction(Statement.namedPosition, fn (*const Statement, []const u8) errors.Error!?usize, "Statement.namedPosition"),
+        .statement_parameter_name => assertExactFunction(Statement.parameterName, fn (*const Statement, usize) errors.Error!?[]u8, "Statement.parameterName"),
+        .statement_parameter_count => assertExactFunction(Statement.parameterCount, fn (*const Statement) errors.Error!usize, "Statement.parameterCount"),
+        .statement_reset => assertExactFunction(Statement.reset, fn (*Statement) errors.Error!void, "Statement.reset"),
+        .statement_value => assertExactFunction(Statement.value, fn (*const Statement, usize) errors.Error!Value, "Statement.value"),
+        .statement_run_io => assertExactFunction(Statement.runIo, fn (*Statement) errors.Error!void, "Statement.runIo"),
+        .statement_step => assertExactFunction(Statement.step, fn (*Statement) errors.Error!statement.Step, "Statement.step"),
+        .statement_step_progress => assertExactFunction(Statement.stepProgress, fn (*Statement) errors.Error!progress.StepProgress, "Statement.stepProgress"),
+        .copy_and_free_diagnostic => assertExactFunction(errors.copyAndFreeDiagnostic, fn (std.mem.Allocator, [*c]const u8) errors.Error!?[]u8, "errors.copyAndFreeDiagnostic"),
+        .version => assertExactFunction(setup.version, fn () errors.Error![]const u8, "version"),
+        .aggregate_state_carrier => assertTypeCategory(aggregate_function.StateBox(void), .@"struct", "aggregate_function.StateBox"),
+        .aggregate_final_trampoline => {
+            const expected: c.turso_aggregate_final_function_t = aggregate_function.finalTrampoline(void, void);
+            _ = expected;
+        },
+        .aggregate_init_trampoline => {
+            const expected: c.turso_aggregate_init_function_t = aggregate_function.initTrampoline(void, void);
+            _ = expected;
+        },
+        .aggregate_step_trampoline => {
+            const expected: c.turso_aggregate_step_function_t = aggregate_function.stepTrampoline(void, void);
+            _ = expected;
+        },
+        .collation_compare_trampoline => {
+            const expected: c.turso_collation_function_t = collation.compareTrampoline(void);
+            _ = expected;
+        },
+        .column_kind => assertTypeCategory(statement.ColumnKind, .@"enum", "ColumnKind"),
+        .setup_config => assertTypeCategory(setup.SetupConfig, .@"struct", "SetupConfig"),
+        .logger_trampoline => assertExactFunction(setup.loggerTrampoline, fn ([*c]const c.turso_log_t) callconv(.c) void, "setup.loggerTrampoline"),
+        .connection_type => if (Connection != connection.Connection) @compileError("Connection type identity mismatch"),
+        .scalar_context_destructor => {
+            const expected: c.turso_context_destructor_t = connection.scalarContextDestructor(void);
+            _ = expected;
+        },
+        .aggregate_context_destructor => {
+            const expected: c.turso_context_destructor_t = aggregate_function.contextDestructor(void, void);
+            _ = expected;
+        },
+        .aggregate_state_destructor => {
+            const expected: c.turso_context_destructor_t = aggregate_function.stateDestructor(void, void);
+            _ = expected;
+        },
+        .collation_context_destructor => {
+            const expected: c.turso_context_destructor_t = collation.contextDestructor(void);
+            _ = expected;
+        },
+        .database_config => if (Database.Config != @import("database.zig").DatabaseConfig) @compileError("Database.Config type identity mismatch"),
+        .database_type => if (Database != @import("database.zig").Database) @compileError("Database type identity mismatch"),
+        .decode_callback_args => assertExactFunction(callback_value.decodeArgs, fn (c_int, [*c]const c.turso_value_t, *[callback_value.max_callback_args]callback_value.BorrowedCallbackValue) callback_value.DecodeError!callback_value.CallbackArgs, "callback_value.decodeArgs"),
+        .managed_error => assertTypeCategory(callback_value.ManagedError, .@"struct", "ManagedError"),
+        .encode_callback_result => assertExactFunction(callback_value.encodeResult, fn (std.mem.Allocator, callback_value.CallbackResult) c.turso_value_t, "callback_value.encodeResult"),
+        .extension_result_code => assertTypeCategory(callback_value.ExtensionResultCode, .@"enum", "ExtensionResultCode"),
+        .extension_text_subtype => assertTypeCategory(callback_value.ExtensionTextSubtype, .@"enum", "ExtensionTextSubtype"),
+        .borrowed_text => assertTypeCategory(callback_value.BorrowedText, .@"struct", "BorrowedText"),
+        .log => assertTypeCategory(setup.Log, .@"struct", "Log"),
+        .scalar_trampoline => {
+            const expected: c.turso_scalar_function_t = connection.scalarTrampoline(void);
+            _ = expected;
+        },
+        .unused_slice_carrier => assertTypeCategory(c.turso_slice_ref_t, .@"struct", "turso_slice_ref_t"),
+        .statement_type => if (Statement != statement.Statement) @compileError("Statement type identity mismatch"),
+        .status_to_error => assertExactFunction(errors.statusToError, fn (c.turso_status_code_t) errors.Error, "errors.statusToError"),
+        .open_progress => assertTypeCategory(progress.OpenProgress, .@"enum", "OpenProgress"),
+        .execute_progress => assertTypeCategory(progress.ExecuteProgress, .@"union", "ExecuteProgress"),
+        .step_progress => assertTypeCategory(progress.StepProgress, .@"enum", "StepProgress"),
+        .finalize_progress => assertTypeCategory(progress.FinalizeProgress, .@"enum", "FinalizeProgress"),
+        .log_level => assertTypeCategory(setup.LogLevel, .@"enum", "LogLevel"),
+        .value => if (Value != @import("value.zig").Value) @compileError("Value type identity mismatch"),
+        .destroy_callback_result => assertExactFunction(callback_value.destroyResult, fn ([*c]c.turso_value_t) callconv(.c) void, "callback_value.destroyResult"),
     }
 }
 
@@ -393,12 +448,19 @@ pub const AuditCounts = struct { missing: usize = 0, unexpected: usize = 0 };
 
 pub fn auditNamespace(comptime Namespace: type, comptime expected_functions: []const FunctionRow, comptime expected_types: []const TypeRow) AuditCounts {
     var counts: AuditCounts = .{};
-    inline for (expected_functions) |manifest_row| if (!@hasDecl(Namespace, manifest_row.name)) {
-        counts.missing += 1;
-    };
-    inline for (expected_types) |manifest_row| if (!@hasDecl(Namespace, manifest_row.name)) {
-        counts.missing += 1;
-    };
+    inline for (expected_functions) |manifest_row| {
+        if (!@hasDecl(Namespace, manifest_row.name) or
+            @typeInfo(@TypeOf(@field(Namespace, manifest_row.name))) != .@"fn" or
+            @TypeOf(@field(Namespace, manifest_row.name)) != @TypeOf(@field(c, manifest_row.name)))
+        {
+            counts.missing += 1;
+        }
+    }
+    inline for (expected_types) |manifest_row| {
+        if (!@hasDecl(Namespace, manifest_row.name) or @TypeOf(@field(Namespace, manifest_row.name)) != type) {
+            counts.missing += 1;
+        }
+    }
     inline for (@typeInfo(Namespace).@"struct".decls) |decl| {
         if (comptime !std.mem.startsWith(u8, decl.name, "turso_")) continue;
         const value = @field(Namespace, decl.name);
@@ -431,7 +493,7 @@ fn validateDocumentRow(document: []const u8, manifest_row: FunctionRow) Document
     if (raw_name.len != manifest_row.name.len + 2 or raw_name[0] != '`' or raw_name[raw_name.len - 1] != '`') return error.DocumentMismatch;
     if (!std.mem.eql(u8, raw_name[1 .. raw_name.len - 1], manifest_row.name)) return error.DocumentMismatch;
     const disposition_name = @tagName(manifest_row.disposition);
-    if (disposition.len != disposition_name.len + 2 or !std.mem.eql(u8, disposition[1 .. disposition.len - 1], disposition_name)) return error.DocumentMismatch;
+    if (disposition.len != disposition_name.len + 2 or disposition[0] != '`' or disposition[disposition.len - 1] != '`' or !std.mem.eql(u8, disposition[1 .. disposition.len - 1], disposition_name)) return error.DocumentMismatch;
     if (api_names.len < 2 or api_names[0] != '`' or api_names[api_names.len - 1] != '`') return error.DocumentMismatch;
     var documented_apis = std.mem.splitSequence(u8, api_names[1 .. api_names.len - 1], " / ");
     for (manifest_row.apis) |api| {
@@ -480,13 +542,27 @@ test "documentation is exactly derived from the manifest" {
     try validateDocument(@embedFile("abi-parity-doc"));
 }
 
-test "synthetic namespace mismatch detects missing and extra functions and typedefs" {
+test "synthetic namespace mismatch detects missing extra and malformed declarations" {
     const Empty = struct {};
     const ExtraFunction = struct {
         pub fn turso_extra() callconv(.c) void {}
     };
     const ExtraType = struct {
         pub const turso_extra_t = opaque {};
+    };
+    const WrongFunctionKind = struct {
+        pub const turso_connection_close = opaque {};
+    };
+    const WrongFunctionSignature = struct {
+        pub fn turso_connection_close() callconv(.c) void {}
+    };
+    const WrongFunctionCallConvention = struct {
+        pub fn turso_connection_close(_: ?*const c.turso_connection_t, _: [*c][*c]const u8) c.turso_status_code_t {
+            return c.TURSO_OK;
+        }
+    };
+    const WrongTypeKind = struct {
+        pub fn turso_agg_ctx_t() callconv(.c) void {}
     };
     const missing_function = auditNamespace(Empty, functions[0..1], &.{});
     try std.testing.expectEqual(@as(usize, 1), missing_function.missing);
@@ -501,13 +577,26 @@ test "synthetic namespace mismatch detects missing and extra functions and typed
     const extra_type = auditNamespace(ExtraType, &.{}, &.{});
     try std.testing.expectEqual(@as(usize, 0), extra_type.missing);
     try std.testing.expectEqual(@as(usize, 1), extra_type.unexpected);
+
+    try std.testing.expectEqual(@as(usize, 1), auditNamespace(WrongFunctionKind, functions[0..1], &.{}).missing);
+    try std.testing.expectEqual(@as(usize, 1), auditNamespace(WrongFunctionSignature, functions[0..1], &.{}).missing);
+    try std.testing.expectEqual(@as(usize, 1), auditNamespace(WrongFunctionCallConvention, functions[0..1], &.{}).missing);
+    try std.testing.expectEqual(@as(usize, 1), auditNamespace(WrongTypeKind, &.{}, types[0..1]).missing);
 }
 
 test "documentation validation rejects any changed manifest cell" {
     const document = @embedFile("abi-parity-doc");
-    const offset = std.mem.indexOf(u8, document, "Checked close ordering") orelse return error.TestExpectedEqual;
-    const drifted = try std.testing.allocator.dupe(u8, document);
-    defer std.testing.allocator.free(drifted);
-    drifted[offset] = 'X';
-    try std.testing.expectError(error.DocumentMismatch, validateDocument(drifted));
+    const rationale_offset = std.mem.indexOf(u8, document, "Checked close ordering") orelse return error.TestExpectedEqual;
+    const drifted_rationale = try std.testing.allocator.dupe(u8, document);
+    defer std.testing.allocator.free(drifted_rationale);
+    drifted_rationale[rationale_offset] = 'X';
+    try std.testing.expectError(error.DocumentMismatch, validateDocument(drifted_rationale));
+
+    const disposition = "`safe_wrapper`";
+    const disposition_offset = std.mem.indexOf(u8, document, disposition) orelse return error.TestExpectedEqual;
+    const drifted_delimiter = try std.testing.allocator.dupe(u8, document);
+    defer std.testing.allocator.free(drifted_delimiter);
+    drifted_delimiter[disposition_offset] = 'x';
+    drifted_delimiter[disposition_offset + disposition.len - 1] = 'x';
+    try std.testing.expectError(error.DocumentMismatch, validateDocument(drifted_delimiter));
 }
