@@ -1403,66 +1403,174 @@ test "managed collation validates names and preserves caller ownership on alloca
     try std.testing.expectEqual(@as(usize, 1), deinits);
 }
 
+const CollationReentryPhase = enum { compare, context_deinit };
+const CollationReentryOperation = enum {
+    connection_prepare,
+    connection_latest_diagnostic,
+    connection_busy_timeout,
+    connection_autocommit,
+    connection_last_insert_rowid,
+    connection_close,
+    connection_deinit,
+    statement_latest_diagnostic,
+    statement_reset,
+    statement_parameter_count,
+    statement_changes,
+    statement_deinit,
+};
+const retained_connection_diagnostic = "retained connection diagnostic";
+const retained_statement_diagnostic = "retained statement diagnostic";
+
 const CollationReentryContext = struct {
     connection: *turso.Connection,
-    statement: *?*turso.Statement,
-    compare_rejected: *bool,
-    deinit_rejected: *bool,
+    statement: *turso.Statement,
+    phase: CollationReentryPhase,
+    operation: CollationReentryOperation,
+    native_last_insert_rowid: *i64,
+    native_statement_changes: *i64,
+    rejected: *bool,
 };
 
-fn attemptCollationReentry(context: *CollationReentryContext, rejected: *bool) void {
-    _ = context.connection.prepareSingle("SELECT 1") catch |err| {
-        rejected.* = err == turso.Error.InvalidState;
-    };
-    context.connection.setBusyTimeoutMs(0) catch {};
-    _ = context.connection.autocommit();
-    _ = context.connection.lastInsertRowid();
-    context.connection.close() catch {};
-    context.connection.deinit();
-    if (context.statement.*) |statement| {
-        statement.reset() catch {};
-        _ = statement.parameterCount() catch {};
-        _ = statement.changes();
-        statement.deinit();
+fn expectCollationReentryRejected(context: *CollationReentryContext) !void {
+    switch (context.operation) {
+        .connection_prepare => try std.testing.expectError(
+            turso.Error.InvalidState,
+            context.connection.prepareSingle("SELECT 1"),
+        ),
+        .connection_latest_diagnostic => switch (context.phase) {
+            .compare => try std.testing.expectEqualStrings(
+                retained_connection_diagnostic,
+                context.connection.latestDiagnostic() orelse return error.MissingRetainedConnectionDiagnostic,
+            ),
+            .context_deinit => try std.testing.expect(context.connection.latestDiagnostic() == null),
+        },
+        .connection_busy_timeout => try std.testing.expectError(
+            turso.Error.InvalidState,
+            context.connection.setBusyTimeoutMs(0),
+        ),
+        .connection_autocommit => try std.testing.expect(!context.connection.autocommit()),
+        .connection_last_insert_rowid => {
+            try std.testing.expect(context.native_last_insert_rowid.* != 0);
+            const guarded = context.connection.lastInsertRowid();
+            try std.testing.expectEqual(@as(i64, 0), guarded);
+            try std.testing.expect(guarded != context.native_last_insert_rowid.*);
+        },
+        .connection_close => try std.testing.expectError(
+            turso.Error.InvalidState,
+            context.connection.close(),
+        ),
+        .connection_deinit => {
+            const handle = context.connection.handle;
+            context.connection.deinit();
+            try std.testing.expectEqual(handle, context.connection.handle);
+        },
+        .statement_latest_diagnostic => try std.testing.expectEqualStrings(
+            retained_statement_diagnostic,
+            context.statement.latestDiagnostic() orelse return error.MissingRetainedStatementDiagnostic,
+        ),
+        .statement_reset => try std.testing.expectError(
+            turso.Error.InvalidState,
+            context.statement.reset(),
+        ),
+        .statement_parameter_count => try std.testing.expectError(
+            turso.Error.InvalidState,
+            context.statement.parameterCount(),
+        ),
+        .statement_changes => {
+            try std.testing.expect(context.native_statement_changes.* != 0);
+            const guarded = context.statement.changes();
+            try std.testing.expectEqual(@as(i64, 0), guarded);
+            try std.testing.expect(guarded != context.native_statement_changes.*);
+        },
+        .statement_deinit => {
+            const handle = context.statement.handle;
+            context.statement.deinit();
+            try std.testing.expectEqual(handle, context.statement.handle);
+        },
     }
 }
 
+fn attemptCollationReentry(context: *CollationReentryContext) void {
+    expectCollationReentryRejected(context) catch return;
+    if (!context.connection.owner_state.callback_violation) return;
+    context.rejected.* = true;
+}
+
 fn compareWithReentry(context: *CollationReentryContext, left: []const u8, right: []const u8) std.math.Order {
-    attemptCollationReentry(context, context.compare_rejected);
+    if (context.phase == .compare) attemptCollationReentry(context);
     return std.mem.order(u8, left, right);
 }
 
 fn deinitWithReentry(context: *CollationReentryContext) void {
-    attemptCollationReentry(context, context.deinit_rejected);
+    if (context.phase == .context_deinit) attemptCollationReentry(context);
 }
 
-test "collation comparator and destructor reject owner reentry" {
+test "collation comparator and destructor isolate every owner reentry guard" {
     var database = try openDatabase(":memory:");
     defer database.deinit();
     try database.open();
     var connection = try database.connect();
     defer connection.deinit();
-    var active_statement: ?*turso.Statement = null;
-    var compare_rejected = false;
-    var deinit_rejected = false;
-    try connection.registerCollation("zig_reentry", turso.Collation(CollationReentryContext){
-        .context = .{
-            .connection = &connection,
-            .statement = &active_statement,
-            .compare_rejected = &compare_rejected,
-            .deinit_rejected = &deinit_rejected,
-        },
-        .compare = compareWithReentry,
-        .deinit = deinitWithReentry,
-    });
-    var statement = try connection.prepareSingle("SELECT v FROM (SELECT 'b' v UNION ALL SELECT 'a') ORDER BY v COLLATE zig_reentry");
-    active_statement = &statement;
-    try std.testing.expectEqual(turso.Step.row, try statement.step());
-    try std.testing.expect(compare_rejected);
-    statement.deinit();
-    active_statement = null;
-    try connection.unregisterCollation("zig_reentry");
-    try std.testing.expect(deinit_rejected);
+    _ = try exec(&connection, "CREATE TABLE collation_reentry_values(id INTEGER PRIMARY KEY)");
+
+    inline for (std.enums.values(CollationReentryPhase)) |phase| {
+        inline for (std.enums.values(CollationReentryOperation)) |operation| {
+            var rejected = false;
+            var native_last_insert_rowid: i64 = 0;
+            var native_statement_changes: i64 = 0;
+            var target: turso.Statement = undefined;
+            try connection.registerCollation("zig_reentry", turso.Collation(CollationReentryContext){
+                .context = .{
+                    .connection = &connection,
+                    .statement = &target,
+                    .phase = phase,
+                    .operation = operation,
+                    .native_last_insert_rowid = &native_last_insert_rowid,
+                    .native_statement_changes = &native_statement_changes,
+                    .rejected = &rejected,
+                },
+                .compare = compareWithReentry,
+                .deinit = deinitWithReentry,
+            });
+            target = try connection.prepareSingle("INSERT INTO collation_reentry_values DEFAULT VALUES");
+            try std.testing.expectEqual(@as(u64, 1), try target.execute());
+            native_last_insert_rowid = connection.lastInsertRowid();
+            native_statement_changes = target.changes();
+            try std.testing.expect(native_last_insert_rowid != 0);
+            try std.testing.expect(native_statement_changes != 0);
+
+            if (phase == .compare) {
+                var statement = try connection.prepareSingle("SELECT 'a' = 'b' COLLATE zig_reentry");
+                if (operation == .connection_latest_diagnostic) {
+                    connection.diagnostic = try connection.allocator.dupe(u8, retained_connection_diagnostic);
+                }
+                if (operation == .statement_latest_diagnostic) {
+                    target.diagnostic = try target.allocator.dupe(u8, retained_statement_diagnostic);
+                }
+                try std.testing.expectEqual(turso.Step.row, try statement.step());
+                var neutralized = try statement.value(0);
+                defer neutralized.deinit(std.testing.allocator);
+                try std.testing.expectEqual(@as(i64, 1), neutralized.integer);
+                try std.testing.expect(rejected);
+                statement.deinit();
+                target.deinit();
+            } else {
+                target.deinit();
+                if (operation == .statement_latest_diagnostic) {
+                    target.diagnostic = try target.allocator.dupe(u8, retained_statement_diagnostic);
+                }
+            }
+            try connection.unregisterCollation("zig_reentry");
+            if (target.diagnostic) |diagnostic| {
+                target.allocator.free(diagnostic);
+                target.diagnostic = null;
+            }
+
+            try std.testing.expect(rejected);
+            try std.testing.expect(!connection.owner_state.callback_active);
+            try connection.setBusyTimeoutMs(0);
+        }
+    }
 }
 
 test "collation table mutations wait for prepared and partially executed statements" {

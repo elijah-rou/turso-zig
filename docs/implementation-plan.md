@@ -47,17 +47,19 @@ only by end of string, `-`, or `+`.
 
 The public surface exports `version`, `setup`, `SetupConfig`, `SetupResult`,
 `SetupFailure`, `Logger`, `Log`, `LogLevel`, `Database`, `Connection`,
-`Statement`, `Value`, managed scalar and aggregate callback value/result/context types,
-`Arity`, `ExtensionResultCode`, `ExtensionTextSubtype`, `Step`, `ColumnKind`,
-`Error`, `ConstructionFailure`, and the explicitly unstable raw `c` namespace. Setup validates bounded strings and
+`Statement`, `Value`, managed scalar and aggregate callback value/result/context
+types, `Collation`, `Arity`, `ExtensionResultCode`, `ExtensionTextSubtype`,
+`Step`, `ColumnKind`, `Error`, `ConstructionFailure`, and the explicitly
+unstable raw `c` namespace. Setup validates bounded strings and
 returns owned native diagnostics. Its first successful process-global level
 wins; later successful setup calls may replace only the process-lifetime plain
 logger function pointer. Logger calls may be concurrent, record slices are
 invocation-borrowed, and malformed or same-thread reentrant records are
 dropped. Database configuration covers the local path and
 the optional 0.7.1 experimental-feature, VFS, and encryption strings while
-forcing `async_io = 0`. Connection methods expose prepare-first/single, busy
-timeout, autocommit, last insert rowid, close, and deinit. Statement methods
+forcing `async_io = 0`. Connection methods expose prepare-first/single, busy timeout, autocommit, last
+insert rowid, managed collation registration/unregistration, close, and deinit.
+Statement methods
 cover positional binds, execute/step, parameter and column metadata, copied row
 values, changes, reset, finalize, and deinit.
 
@@ -89,8 +91,19 @@ reclamation before removing its registration from the explicit heap-stable
 connection list. The 4097th retained state fails with managed out-of-range
 before initialization or allocation.
 
-Defer cloud sync, collations, loadable extensions, and async I/O. Each deferred
-area requires a separate ownership, scheduler, or trust-boundary design.
+Managed collations use heap-stable typed contexts and invocation-borrowed UTF-8
+comparison inputs. Native owns a context only after raw `TURSO_OK` registration;
+replacement, explicit unregistration, and connection teardown destroy it
+exactly once. Comparator and context-deinitializer reentry through the owning
+connection or its statements is rejected before native access, with neutral
+getter sentinels recording a callback violation. Every collation table mutation
+is rejected while any statement exists, preventing native programs from
+retaining a retired context. The verified SQL scope is expression comparison
+and explicit sorting. Schema declarations, indexes, uniqueness constraints,
+and persisted schemas that name managed collations remain explicitly unclaimed.
+
+Defer cloud sync, loadable extensions, and async I/O. Each deferred area
+requires a separate ownership, scheduler, or trust-boundary design.
 
 ## 2. Treat `turso.h` as the ABI source of truth
 
@@ -184,8 +197,9 @@ binding's public ownership, conversion, and error contract.
 
 - **Cloud sync:** map remote URL, auth token, push/pull/checkpoint, and sync
   statistics after identifying the corresponding supported C ABI surface.
-- **Callbacks:** collations require a separate ordering and ownership design;
-  scalar and aggregate support does not imply that contract.
+- **Callbacks:** extend only after defining ownership and mutation safety for
+  each additional callback family; managed scalar, aggregate, and collation
+  contracts do not imply support for other callback ABIs.
 - **Extensions:** default disabled; enabling loading changes the application's
   trust boundary.
 - **Async I/O:** expose progress without blocking an event loop and define

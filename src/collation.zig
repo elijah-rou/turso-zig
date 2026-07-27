@@ -33,7 +33,10 @@ pub fn compareTrampoline(comptime Context: type) c.turso_collation_function_t {
         ) callconv(.c) c_int {
             if (opaque_context == 0) return 0;
             const box: *Box(Context) = @ptrFromInt(opaque_context);
-            if (box.owner_state.callback_active) return 0;
+            if (box.owner_state.callback_active) {
+                box.owner_state.recordCallbackViolation();
+                return 0;
+            }
             const left = borrowedText(left_pointer, left_length) orelse return 0;
             const right = borrowedText(right_pointer, right_length) orelse return 0;
 
@@ -56,6 +59,9 @@ pub fn contextDestructor(comptime Context: type) c.turso_context_destructor_t {
             if (opaque_context == 0) return;
             const box: *Box(Context) = @ptrFromInt(opaque_context);
             const allocator = box.allocator;
+            if (box.owner_state.active_statements != 0) {
+                box.owner_state.recordCallbackViolation();
+            }
             const previous = box.owner_state.enterCallback();
             if (box.collation.deinit) |deinit_function| deinit_function(&box.collation.context);
             _ = box.owner_state.leaveCallback(previous);
@@ -72,6 +78,54 @@ fn borrowedText(pointer: [*c]const u8, length: usize) ?[]const u8 {
     const text = bytes[0..length];
     if (!std.unicode.utf8ValidateSlice(text)) return null;
     return text;
+}
+
+test "nested collation callback activity records a violation" {
+    const Context = struct {
+        fn compare(_: *@This(), _: []const u8, _: []const u8) std.math.Order {
+            return .eq;
+        }
+    };
+    var owner_state: ownership.ConnectionState = .{ .callback_active = true };
+    const box = try std.testing.allocator.create(Box(Context));
+    defer std.testing.allocator.destroy(box);
+    box.* = .{
+        .allocator = std.testing.allocator,
+        .owner_state = &owner_state,
+        .collation = .{ .context = .{}, .compare = Context.compare },
+    };
+
+    const compare = compareTrampoline(Context).?;
+    try std.testing.expectEqual(@as(c_int, 0), compare(@intFromPtr(box), "a", 1, "b", 1));
+    try std.testing.expect(owner_state.callback_violation);
+}
+
+test "collation context destruction records non-quiescent native retirement" {
+    const Context = struct {
+        deinits: *usize,
+        fn compare(_: *@This(), _: []const u8, _: []const u8) std.math.Order {
+            return .eq;
+        }
+        fn deinit(context: *@This()) void {
+            context.deinits.* += 1;
+        }
+    };
+    var owner_state: ownership.ConnectionState = .{ .active_statements = 1 };
+    var deinits: usize = 0;
+    const box = try std.testing.allocator.create(Box(Context));
+    box.* = .{
+        .allocator = std.testing.allocator,
+        .owner_state = &owner_state,
+        .collation = .{
+            .context = .{ .deinits = &deinits },
+            .compare = Context.compare,
+            .deinit = Context.deinit,
+        },
+    };
+
+    contextDestructor(Context).?(@intFromPtr(box));
+    try std.testing.expectEqual(@as(usize, 1), deinits);
+    try std.testing.expect(owner_state.callback_violation);
 }
 
 test "collation boundary validates borrowed text and maps ordering exactly" {
