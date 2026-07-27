@@ -11,7 +11,10 @@ path, database/connection/statement cleanup, positional values (including
 NULL and empty text/blob), copied-value lifetime, metadata, reset and reuse,
 prepare tails, transaction state, diagnostics, constraint errors, file reopen
 persistence, and early row-loop cleanup under Zig's leak-detecting test
-allocator.
+allocator. Managed scalar coverage includes fixed and variadic arity, both
+determinism options, every callback value and result code, malformed ABI input,
+OOM/oversize output, replacement/unregister/prepared-program/connection context
+lifetime, repeated calls, and name/arity validation.
 
 Run the complete suite with Zig 0.16.0 and a native library built from Turso
 tag `v0.7.1`:

@@ -4,12 +4,17 @@ An early synchronous Zig 0.16.0 SDK for Turso embedded/local databases. The
 implemented API exposes the runtime version and process-global tracing setup,
 opens local databases, prepares statements, binds positional values, executes
 SQL, streams rows, copies typed values, exposes metadata and transaction state,
-and retains native diagnostics.
+registers managed scalar functions, and retains native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
+<<<<<<< HEAD
 macOS, Windows, cloud sync, SQL function/collation callbacks, extensions, and
 async I/O are not yet supported. Process-global tracing callbacks are supported
 through `setup` as described below.
+=======
+macOS, Windows, cloud sync, aggregate/collation callbacks, loadable extensions,
+and async I/O are not yet supported.
+>>>>>>> 59ae294 (feat: add safe managed scalar callbacks)
 
 ## Native library requirement
 
@@ -70,6 +75,19 @@ switch (setup_result) {
     },
 }
 ```
+
+## Managed scalar functions
+
+`Connection.registerScalarFunction` installs fixed-arity or variadic callbacks
+with an owned typed context. Callback arguments are invocation-borrowed and
+include NULL, integer, float, text/JSON, blob, and managed-error values. Returned
+text, JSON, blob, and error messages are copied into at most 16 MiB of
+allocator-owned backing and released after Turso copies them.
+
+Callbacks and context deinitializers must not panic or re-enter their owning
+connection. Native ownership begins only after successful registration. After
+that point replacement, `unregisterFunction`, prepared-program release, or
+connection teardown calls the context deinitializer exactly once.
 
 ## Basic use
 

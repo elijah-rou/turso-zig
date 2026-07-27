@@ -7,8 +7,9 @@ The implemented synchronous SDK is split at ownership boundaries:
 - `error.zig`: exhaustive status mapping and copy/free handling for Turso diagnostics.
 - `setup.zig`: safe version access, owned setup failures, and the synchronized process-global logger trampoline.
 - `value.zig`: `Value`, whose text/blob variants own allocator-copied bytes.
+- `callback_value.zig`: exhaustive borrowed callback values and bounded, owned result encoding.
 - `database.zig`: copied configuration, create/open/connect/deinit, construction failures, and database diagnostics.
-- `connection.zig`: prepare, busy timeout, transaction state, close/deinit, and connection diagnostics.
+- `connection.zig`: prepare, managed scalar registration policy, busy timeout, transaction state, close/deinit, and connection diagnostics.
 - `statement.zig`: positional binding, execute/step/reset/finalize, copied values and metadata, and statement diagnostics.
 
 `Database`, `Connection`, and `Statement` own opaque native handles. They are
@@ -31,5 +32,10 @@ none when no callback exists. Loggers must be thread-safe and non-panicking;
 they must not call `setup`, which rejects logger-callback reentry with
 `InvalidState`.
 
-Cloud sync, user-defined callbacks, extensions, and async I/O are outside the
-implemented v0 surface.
+Managed scalar callback contexts transfer to native ownership only after a
+successful registration. Result destructors release nested package allocations,
+never Turso's stack result pointer. Callback and context-deinit execution blocks
+re-entry into the owning connection.
+
+Cloud sync, aggregate and collation callbacks, loadable extensions, and async
+I/O are outside the implemented v0 surface.

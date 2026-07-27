@@ -47,8 +47,9 @@ only by end of string, `-`, or `+`.
 
 The public surface exports `version`, `setup`, `SetupConfig`, `SetupResult`,
 `SetupFailure`, `Logger`, `Log`, `LogLevel`, `Database`, `Connection`,
-`Statement`, `Value`, `Step`, `ColumnKind`, `Error`, `ConstructionFailure`, and
-the explicitly unstable raw `c` namespace. Setup validates bounded strings and
+`Statement`, `Value`, managed scalar callback value/result/context types,
+`Arity`, `ExtensionResultCode`, `ExtensionTextSubtype`, `Step`, `ColumnKind`,
+`Error`, `ConstructionFailure`, and the explicitly unstable raw `c` namespace. Setup validates bounded strings and
 returns owned native diagnostics. Its first successful process-global level
 wins; later successful setup calls may replace only the process-lifetime plain
 logger function pointer. Logger calls may be concurrent, record slices are
@@ -60,10 +61,16 @@ timeout, autocommit, last insert rowid, close, and deinit. Statement methods
 cover positional binds, execute/step, parameter and column metadata, copied row
 values, changes, reset, finalize, and deinit.
 
-Defer cloud sync, user-defined scalar/aggregate functions, collations,
-loadable extensions, and async I/O. The process-global logger does not imply a
-general callback ownership design. Each deferred area requires a separate
-ownership, scheduler, or trust-boundary design.
+Managed scalar functions use heap-stable typed contexts and bounded borrowed
+arguments. Native ownership is authoritative after successful registration;
+replacement, unregister, delayed prepared-program release, and connection
+teardown determine context destruction. Text/blob/error results are copied into
+at most 16 MiB of package-owned backing and released by the always-supplied
+value destructor.
+
+Defer cloud sync, aggregate functions, collations, loadable extensions, and
+async I/O. Each deferred area requires a separate ownership, scheduler, or
+trust-boundary design.
 
 ## 2. Treat `turso.h` as the ABI source of truth
 
@@ -157,9 +164,8 @@ binding's public ownership, conversion, and error contract.
 
 - **Cloud sync:** map remote URL, auth token, push/pull/checkpoint, and sync
   statistics after identifying the corresponding supported C ABI surface.
-- **Callbacks:** scalar functions, aggregates, and collations require stable
-  callback trampolines, context ownership, and panic containment across the C
-  boundary. Design this separately.
+- **Callbacks:** aggregate functions and collations require separate state and
+  ownership designs; scalar support does not imply either contract.
 - **Extensions:** default disabled; enabling loading changes the application's
   trust boundary.
 - **Async I/O:** expose progress without blocking an event loop and define
