@@ -105,7 +105,7 @@ pub fn decodeArgs(
 }
 
 fn decodeValue(raw: c.turso_value_t) DecodeError!BorrowedCallbackValue {
-    return switch (@as(c_int, @intCast(raw.value_type))) {
+    return switch (raw.value_type) {
         c.TURSO_EXTENSION_VALUE_NULL => .null,
         c.TURSO_EXTENSION_VALUE_INTEGER => .{ .integer = raw.value.int_value },
         c.TURSO_EXTENSION_VALUE_FLOAT => .{ .float = raw.value.float_value },
@@ -154,7 +154,7 @@ fn checkedBytes(pointer: [*c]const u8, len: usize) DecodeError![]const u8 {
 }
 
 fn decodeTextSubtype(raw: c.turso_extension_text_subtype_t) DecodeError!ExtensionTextSubtype {
-    return switch (@as(c_int, @intCast(raw))) {
+    return switch (raw) {
         c.TURSO_EXTENSION_TEXT_TEXT => .text,
         c.TURSO_EXTENSION_TEXT_JSON => .json,
         else => DecodeError.UnknownTextSubtype,
@@ -162,7 +162,7 @@ fn decodeTextSubtype(raw: c.turso_extension_text_subtype_t) DecodeError!Extensio
 }
 
 fn decodeResultCode(raw: c.turso_extension_result_code_t) DecodeError!ExtensionResultCode {
-    return switch (@as(c_int, @intCast(raw))) {
+    return switch (raw) {
         inline 0...21 => |value| @enumFromInt(value),
         else => DecodeError.UnknownResultCode,
     };
@@ -252,6 +252,7 @@ fn encodeError(allocator: std.mem.Allocator, value: ManagedError) EncodeError!c.
     const backing = allocator.create(ErrorBacking) catch return EncodeError.OutOfMemory;
     errdefer allocator.destroy(backing);
     var message: ?*TextBacking = null;
+    errdefer if (message) |text| destroyText(&text.abi);
     if (value.message) |bytes| {
         const encoded = try encodeText(allocator, .{ .subtype = .text, .bytes = bytes });
         const abi: *c.turso_extension_text_t = @ptrCast(@constCast(encoded.value.text));
@@ -286,7 +287,7 @@ fn rawNull() c.turso_value_t {
 
 pub fn destroyResult(result: [*c]c.turso_value_t) callconv(.c) void {
     if (result == null) return;
-    switch (@as(c_int, @intCast(result.*.value_type))) {
+    switch (result.*.value_type) {
         c.TURSO_EXTENSION_VALUE_TEXT => destroyText(result.*.value.text),
         c.TURSO_EXTENSION_VALUE_BLOB => {
             const abi = result.*.value.blob;
@@ -369,7 +370,7 @@ test "callback decoder rejects malformed pointers lengths utf8 and unknown tags"
     try std.testing.expectError(error.InvalidArgumentCount, decodeArgs(max_callback_args + 1, null, &storage));
 
     var raw = rawNull();
-    raw.value_type = 99;
+    raw.value_type = std.math.maxInt(c_uint);
     try std.testing.expectError(error.UnknownValueType, decodeArgs(1, @ptrCast(&raw), &storage));
     raw.value_type = c.TURSO_EXTENSION_VALUE_TEXT;
     raw.value.text = null;
@@ -384,6 +385,30 @@ test "callback decoder rejects malformed pointers lengths utf8 and unknown tags"
     raw.value.text = &bad_text;
     try std.testing.expectError(error.InvalidUtf8, decodeArgs(1, @ptrCast(&raw), &storage));
     bad_text.subtype = 99;
+    bad_text.len = 0;
+    try std.testing.expectError(error.UnknownTextSubtype, decodeArgs(1, @ptrCast(&raw), &storage));
+    bad_text.subtype = c.TURSO_EXTENSION_TEXT_TEXT;
+    bad_text.len = max_result_backing + 1;
+    try std.testing.expectError(error.OversizeValue, decodeArgs(1, @ptrCast(&raw), &storage));
+
+    raw.value_type = c.TURSO_EXTENSION_VALUE_BLOB;
+    raw.value.blob = null;
+    try std.testing.expectError(error.MissingValueBacking, decodeArgs(1, @ptrCast(&raw), &storage));
+    var bad_blob = c.turso_extension_blob_t{ .data = null, .size = 1 };
+    raw.value.blob = &bad_blob;
+    try std.testing.expectError(error.MissingValueBacking, decodeArgs(1, @ptrCast(&raw), &storage));
+    bad_blob.size = max_result_backing + 1;
+    try std.testing.expectError(error.OversizeValue, decodeArgs(1, @ptrCast(&raw), &storage));
+
+    raw.value_type = c.TURSO_EXTENSION_VALUE_ERROR;
+    raw.value.@"error" = null;
+    try std.testing.expectError(error.MissingValueBacking, decodeArgs(1, @ptrCast(&raw), &storage));
+    var bad_error = c.turso_extension_error_t{ .code = 99, .message = null };
+    raw.value.@"error" = &bad_error;
+    try std.testing.expectError(error.UnknownResultCode, decodeArgs(1, @ptrCast(&raw), &storage));
+    bad_error.code = c.TURSO_EXTENSION_RESULT_ERROR;
+    bad_error.message = &bad_text;
+    bad_text.subtype = c.TURSO_EXTENSION_TEXT_JSON;
     bad_text.len = 0;
     try std.testing.expectError(error.UnknownTextSubtype, decodeArgs(1, @ptrCast(&raw), &storage));
 }

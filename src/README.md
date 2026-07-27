@@ -32,10 +32,13 @@ none when no callback exists. Loggers must be thread-safe and non-panicking;
 they must not call `setup`, which rejects logger-callback reentry with
 `InvalidState`.
 
-Managed scalar callback contexts transfer to native ownership only after a
-successful registration. Result destructors release nested package allocations,
-never Turso's stack result pointer. Callback and context-deinit execution blocks
-re-entry into the owning connection.
+Managed scalar callback contexts transfer to native ownership only after raw
+`TURSO_OK`; failed registration leaves context cleanup with the caller. Result
+destructors release nested package allocations, never Turso's stack result
+pointer. Callback and context-deinit execution blocks native re-entry through
+the owning connection and all of its statements. Turso 0.7.1 callback arguments
+lose JSON subtype and never carry managed ERROR values; decoding those ABI tags
+remains defensive source-level coverage.
 
 Cloud sync, aggregate and collation callbacks, loadable extensions, and async
 I/O are outside the implemented v0 surface.

@@ -79,15 +79,20 @@ switch (setup_result) {
 ## Managed scalar functions
 
 `Connection.registerScalarFunction` installs fixed-arity or variadic callbacks
-with an owned typed context. Callback arguments are invocation-borrowed and
-include NULL, integer, float, text/JSON, blob, and managed-error values. Returned
-text, JSON, blob, and error messages are copied into at most 16 MiB of
-allocator-owned backing and released after Turso copies them.
+with an owned typed context. Runtime callback arguments are invocation-borrowed
+NULL, integer, float, text, or blob values. Turso 0.7.1 loses JSON subtype on
+arguments and cannot deliver a managed ERROR as an argument; the decoder still
+handles both ABI tags defensively. Returned text, JSON, blob, and error messages
+are copied into at most 16 MiB of allocator-owned backing and released after
+Turso copies them.
 
 Callbacks and context deinitializers must not panic or re-enter their owning
-connection. Native ownership begins only after successful registration. After
-that point replacement, `unregisterFunction`, prepared-program release, or
-connection teardown calls the context deinitializer exactly once.
+connection or its statements. Reentry is rejected without crossing the C
+boundary and makes an active callback return a managed SQL error. Native
+ownership begins only after successful registration. Before success, the caller
+retains context ownership. After success, replacement, `unregisterFunction`,
+prepared-program release, or connection teardown calls the context
+deinitializer exactly once.
 
 ## Basic use
 

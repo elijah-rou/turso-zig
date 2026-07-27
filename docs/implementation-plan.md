@@ -62,11 +62,15 @@ cover positional binds, execute/step, parameter and column metadata, copied row
 values, changes, reset, finalize, and deinit.
 
 Managed scalar functions use heap-stable typed contexts and bounded borrowed
-arguments. Native ownership is authoritative after successful registration;
-replacement, unregister, delayed prepared-program release, and connection
-teardown determine context destruction. Text/blob/error results are copied into
-at most 16 MiB of package-owned backing and released by the always-supplied
-value destructor.
+arguments. Native ownership is authoritative only after raw `TURSO_OK`; earlier
+failure leaves context cleanup with the caller. A heap-stable connection guard
+blocks callback and context-deinitializer reentry through every connection and
+statement operation without another native call. Replacement, unregister,
+delayed prepared-program release, and connection teardown determine context
+destruction. Turso 0.7.1 loses JSON subtype on SQL callback arguments and cannot
+supply ERROR arguments; those decoder cases remain ABI-defensive. JSON results
+and text/blob/error results are copied into at most 16 MiB of package-owned
+backing and released by the always-supplied value destructor.
 
 Defer cloud sync, aggregate functions, collations, loadable extensions, and
 async I/O. Each deferred area requires a separate ownership, scheduler, or

@@ -19,6 +19,10 @@ pub const Connection = struct {
     closed: bool = false,
 
     pub fn latestDiagnostic(self: *const Connection) ?[]const u8 {
+        if (self.owner_state.callback_active) {
+            self.owner_state.recordCallbackViolation();
+            return self.diagnostic;
+        }
         std.debug.assert(self.handle != null);
         return self.diagnostic;
     }
@@ -131,10 +135,8 @@ pub const Connection = struct {
             .owner_state = self.owner_state,
             .function = function,
         };
-        errdefer {
-            if (box.function.deinit) |deinit_function| deinit_function(&box.function.context);
-            self.allocator.destroy(box);
-        }
+        var transferred = false;
+        defer if (!transferred) self.allocator.destroy(box);
 
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_connection_register_scalar_function(
@@ -148,6 +150,8 @@ pub const Connection = struct {
             callback_value.destroyResult,
             &error_opt_out,
         );
+        transferred = registrationTransfersOwnership(status);
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
     }
 
@@ -159,6 +163,7 @@ pub const Connection = struct {
 
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_connection_unregister_function(handle, name_z.ptr, &error_opt_out);
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
     }
 
@@ -172,6 +177,10 @@ pub const Connection = struct {
     }
 
     pub fn autocommit(self: *const Connection) bool {
+        if (self.owner_state.callback_active) {
+            self.owner_state.recordCallbackViolation();
+            return false;
+        }
         const handle = self.handle orelse {
             std.debug.assert(false);
             return false;
@@ -181,6 +190,10 @@ pub const Connection = struct {
     }
 
     pub fn lastInsertRowid(self: *const Connection) i64 {
+        if (self.owner_state.callback_active) {
+            self.owner_state.recordCallbackViolation();
+            return 0;
+        }
         const handle = self.handle orelse {
             std.debug.assert(false);
             return 0;
@@ -190,6 +203,7 @@ pub const Connection = struct {
     }
 
     pub fn close(self: *Connection) errors.Error!void {
+        try self.rejectCallbackReentry();
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         const handle = self.handle orelse {
             std.debug.assert(false);
@@ -211,6 +225,10 @@ pub const Connection = struct {
     }
 
     pub fn deinit(self: *Connection) void {
+        if (self.owner_state.callback_active) {
+            self.owner_state.recordCallbackViolation();
+            return;
+        }
         const handle = self.handle orelse {
             std.debug.assert(false);
             return;
@@ -227,7 +245,7 @@ pub const Connection = struct {
     }
 
     fn beginOperation(self: *Connection) errors.Error!*c.turso_connection_t {
-        if (self.owner_state.callback_active) return errors.Error.InvalidState;
+        try self.rejectCallbackReentry();
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         const handle = self.handle orelse {
             std.debug.assert(false);
@@ -238,6 +256,14 @@ pub const Connection = struct {
             return errors.Error.InvalidState;
         }
         return handle;
+    }
+
+    fn rejectCallbackReentry(self: *Connection) errors.Error!void {
+        if (!self.owner_state.callback_active) return;
+        self.owner_state.recordCallbackViolation();
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
+        try errors.setDiagnostic(self.allocator, &self.diagnostic, "scalar callback re-entry is not allowed");
+        return errors.Error.InvalidState;
     }
 
     fn validateFunctionName(self: *Connection, name: []const u8) errors.Error!void {
@@ -266,6 +292,10 @@ pub const Connection = struct {
     }
 };
 
+fn registrationTransfersOwnership(status: c.turso_status_code_t) bool {
+    return status == c.TURSO_OK;
+}
+
 fn ScalarBox(comptime Context: type) type {
     return struct {
         allocator: std.mem.Allocator,
@@ -288,17 +318,60 @@ fn scalarTrampoline(comptime Context: type) c.turso_scalar_function_t {
             const box: *Box = @ptrFromInt(opaque_context);
             if (box.owner_state.callback_active) return callback_value.encodeBoundaryFailure(.invalid_args);
 
-            box.owner_state.callback_active = true;
-            defer box.owner_state.callback_active = false;
+            const previous = box.owner_state.enterCallback();
+            defer _ = box.owner_state.leaveCallback(previous);
             var storage: [callback_value.max_callback_args]callback_value.BorrowedCallbackValue = undefined;
             const args = callback_value.decodeArgs(argc, argv, &storage) catch |err| return switch (err) {
                 error.OversizeValue => callback_value.encodeBoundaryFailure(.out_of_range),
                 else => callback_value.encodeBoundaryFailure(.invalid_args),
             };
             const result = box.function.call(&box.function.context, args);
+            if (box.owner_state.callback_violation) {
+                return callback_value.encodeResult(box.allocator, .{ .managed_error = .{
+                    .code = .invalid_args,
+                    .message = "scalar callback re-entry is not allowed",
+                } });
+            }
             return callback_value.encodeResult(box.allocator, result);
         }
     }.call;
+}
+
+test "scalar registration ownership transfers only on TURSO_OK" {
+    try std.testing.expect(registrationTransfersOwnership(c.TURSO_OK));
+    try std.testing.expect(!registrationTransfersOwnership(c.TURSO_ERROR));
+    try std.testing.expect(!registrationTransfersOwnership(c.TURSO_MISUSE));
+}
+
+test "scalar context destructor restores guard and destroys active box exactly once" {
+    const Context = struct {
+        deinits: *usize,
+        fn deinit(context: *@This()) void {
+            context.deinits.* += 1;
+        }
+        fn call(_: *@This(), _: callback_value.CallbackArgs) callback_value.CallbackResult {
+            return .null;
+        }
+    };
+    var owner_state: ownership.ConnectionState = .{ .callback_active = true, .callback_violation = true };
+    var deinits: usize = 0;
+    const Box = ScalarBox(Context);
+    const box = try std.testing.allocator.create(Box);
+    box.* = .{
+        .allocator = std.testing.allocator,
+        .owner_state = &owner_state,
+        .function = .{
+            .context = .{ .deinits = &deinits },
+            .call = Context.call,
+            .deinit = Context.deinit,
+        },
+    };
+
+    const destructor = scalarContextDestructor(Context) orelse unreachable;
+    destructor(@intFromPtr(box));
+    try std.testing.expectEqual(@as(usize, 1), deinits);
+    try std.testing.expect(owner_state.callback_active);
+    try std.testing.expect(owner_state.callback_violation);
 }
 
 fn scalarContextDestructor(comptime Context: type) c.turso_context_destructor_t {
@@ -307,11 +380,10 @@ fn scalarContextDestructor(comptime Context: type) c.turso_context_destructor_t 
             if (opaque_context == 0) return;
             const Box = ScalarBox(Context);
             const box: *Box = @ptrFromInt(opaque_context);
-            if (box.owner_state.callback_active) return;
-            box.owner_state.callback_active = true;
-            if (box.function.deinit) |deinit_function| deinit_function(&box.function.context);
-            box.owner_state.callback_active = false;
             const allocator = box.allocator;
+            const previous = box.owner_state.enterCallback();
+            if (box.function.deinit) |deinit_function| deinit_function(&box.function.context);
+            _ = box.owner_state.leaveCallback(previous);
             allocator.destroy(box);
         }
     }.destroy;
