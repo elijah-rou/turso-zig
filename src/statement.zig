@@ -60,6 +60,27 @@ const ProgressState = struct {
     }
 };
 
+const ProgressRecord = struct {
+    registration: ownership.StatementProgressRecord,
+    state: ProgressState = .{},
+};
+
+pub fn init(
+    allocator: std.mem.Allocator,
+    handle: *c.turso_statement_t,
+    connection_owner_state: *ownership.ConnectionState,
+    io_mode: progress.IoMode,
+) errors.Error!Statement {
+    const record = try createProgressRecord(allocator, handle);
+    connection_owner_state.addStatementProgressRecord(&record.registration);
+    return .{
+        .allocator = allocator,
+        .handle = handle,
+        .connection_owner_state = connection_owner_state,
+        .io_mode = io_mode,
+    };
+}
+
 pub const ColumnKind = enum {
     none,
     builtin,
@@ -75,7 +96,6 @@ pub const Statement = struct {
     connection_owner_state: *ownership.ConnectionState,
     io_mode: progress.IoMode,
     diagnostic: ?[]u8 = null,
-    progress_state: ProgressState = .{},
     row_available: bool = false,
     finalized: bool = false,
 
@@ -211,7 +231,7 @@ pub const Statement = struct {
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "runIo requires caller-driven I/O mode");
             return errors.Error.InvalidState;
         }
-        if (self.progress_state.runIoRejection()) |rejection| {
+        if (self.progressState().runIoRejection()) |rejection| {
             const message = switch (rejection) {
                 .no_pending_operation => "runIo requires a pending statement operation",
                 .retry_required => "pending operation must be retried before running more I/O",
@@ -222,7 +242,7 @@ pub const Statement = struct {
 
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_run_io(handle, &error_opt_out);
-        self.progress_state.recordRunIoStatus(status == c.TURSO_OK);
+        self.progressState().recordRunIoStatus(status == c.TURSO_OK);
         const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
         if (status == c.TURSO_OK) return errors.rejectUnexpectedDiagnostic(self.allocator, copied);
         self.diagnostic = copied;
@@ -231,13 +251,13 @@ pub const Statement = struct {
 
     pub fn reset(self: *Statement) errors.Error!void {
         const handle = try self.beginMutationAllowFinalized();
-        if (!self.progress_state.isQuiescent()) {
+        if (!self.progressState().isQuiescent()) {
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "pending statement operation must be completed before reset");
             return errors.Error.InvalidState;
         }
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_reset(handle, &error_opt_out);
-        recordResetStatus(&self.progress_state, &self.finalized, status);
+        recordResetStatus(self.progressState(), &self.finalized, status);
         try errors.finishExpected(self.allocator, status, c.TURSO_OK, error_opt_out, &self.diagnostic);
     }
 
@@ -254,13 +274,14 @@ pub const Statement = struct {
         const handle = try self.beginProgressOperation(.finalize);
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_finalize(handle, &error_opt_out);
+        recordFinalizeNativeStatus(self.progressState(), &self.finalized, status);
         return switch (status) {
             c.TURSO_DONE => value: {
-                try self.finishProgressSuccess(.finalize, error_opt_out);
+                try self.finishProgressDiagnostic(error_opt_out);
                 break :value .done;
             },
             c.TURSO_IO => value: {
-                try self.finishProgressIo(.finalize, error_opt_out);
+                try self.finishProgressDiagnostic(error_opt_out);
                 break :value .needs_io;
             },
             else => self.finishProgressError(.finalize, status, error_opt_out),
@@ -376,17 +397,31 @@ pub const Statement = struct {
             return;
         };
         std.debug.assert(self.connection_owner_state.active_statements > 0);
-        if (self.io_mode == .caller_driven) std.debug.assert(self.progress_state.isQuiescent());
+        if (self.io_mode == .caller_driven) std.debug.assert(self.progressState().isQuiescent());
         c.turso_statement_deinit(handle);
+        const registration = self.connection_owner_state.removeStatementProgressRecord(@intFromPtr(handle));
+        const record: *ProgressRecord = @fieldParentPtr("registration", registration);
+        self.allocator.destroy(record);
         self.handle = null;
-        self.connection_owner_state.active_statements -= 1;
         if (self.connection_owner_state.active_statements == 0) {
             self.connection_owner_state.reclaimAggregateStates();
         }
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
-        self.progress_state = .{};
         self.row_available = false;
         self.finalized = true;
+    }
+
+    fn progressState(self: *const Statement) *ProgressState {
+        const handle = self.handle orelse {
+            std.debug.assert(false);
+            unreachable;
+        };
+        const registration = self.connection_owner_state.findStatementProgressRecord(@intFromPtr(handle)) orelse {
+            std.debug.assert(false);
+            unreachable;
+        };
+        const record: *ProgressRecord = @fieldParentPtr("registration", registration);
+        return &record.state;
     }
 
     fn validHandle(self: *const Statement) errors.Error!*c.turso_statement_t {
@@ -430,7 +465,7 @@ pub const Statement = struct {
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "progress methods require caller-driven I/O mode");
             return errors.Error.InvalidState;
         }
-        if (self.progress_state.callRejection(operation)) |rejection| {
+        if (self.progressState().callRejection(operation)) |rejection| {
             const message = switch (rejection) {
                 .awaiting_io => "pending statement operation requires runIo before retry",
                 .wrong_operation => "pending statement operation requires retry of the same operation",
@@ -442,19 +477,23 @@ pub const Statement = struct {
     }
 
     fn finishProgressSuccess(self: *Statement, operation: ProgressOperation, error_opt_out: [*c]const u8) errors.Error!void {
-        recordNativeProgressStatus(&self.progress_state, &self.finalized, operation, .completed);
+        recordNativeProgressStatus(self.progressState(), &self.finalized, operation, .completed);
         const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
         try errors.rejectUnexpectedDiagnostic(self.allocator, copied);
     }
 
     fn finishProgressIo(self: *Statement, operation: ProgressOperation, error_opt_out: [*c]const u8) errors.Error!void {
-        recordNativeProgressStatus(&self.progress_state, &self.finalized, operation, .io);
+        recordNativeProgressStatus(self.progressState(), &self.finalized, operation, .io);
+        try self.finishProgressDiagnostic(error_opt_out);
+    }
+
+    fn finishProgressDiagnostic(self: *Statement, error_opt_out: [*c]const u8) errors.Error!void {
         const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
         try errors.rejectUnexpectedDiagnostic(self.allocator, copied);
     }
 
     fn finishProgressError(self: *Statement, operation: ProgressOperation, status: c.turso_status_code_t, error_opt_out: [*c]const u8) errors.Error {
-        recordNativeProgressStatus(&self.progress_state, &self.finalized, operation, .completed);
+        if (operation != .finalize) recordNativeProgressStatus(self.progressState(), &self.finalized, operation, .completed);
         const copied = errors.copyAndFreeDiagnostic(self.allocator, error_opt_out) catch return errors.Error.OutOfMemory;
         self.diagnostic = copied;
         return errors.statusToError(status);
@@ -467,7 +506,7 @@ pub const Statement = struct {
             return errors.Error.InvalidState;
         }
         if (self.finalized) return errors.Error.InvalidState;
-        if (!self.progress_state.isQuiescent()) {
+        if (!self.progressState().isQuiescent()) {
             errors.clearDiagnostic(self.allocator, &self.diagnostic);
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "pending statement operation must be completed");
             return errors.Error.InvalidState;
@@ -508,6 +547,12 @@ pub const Statement = struct {
     }
 };
 
+fn createProgressRecord(allocator: std.mem.Allocator, handle: *c.turso_statement_t) errors.Error!*ProgressRecord {
+    const record = allocator.create(ProgressRecord) catch return errors.Error.OutOfMemory;
+    record.* = .{ .registration = .{ .native_handle_key = @intFromPtr(handle) } };
+    return record;
+}
+
 fn recordNativeProgressStatus(
     state: *ProgressState,
     finalized: *bool,
@@ -520,6 +565,14 @@ fn recordNativeProgressStatus(
             state.recordOperationCompleted(operation);
             if (operation == .finalize) finalized.* = true;
         },
+    }
+}
+
+fn recordFinalizeNativeStatus(state: *ProgressState, finalized: *bool, status: c.turso_status_code_t) void {
+    switch (status) {
+        c.TURSO_DONE => recordNativeProgressStatus(state, finalized, .finalize, .completed),
+        c.TURSO_IO => recordNativeProgressStatus(state, finalized, .finalize, .io),
+        else => {},
     }
 }
 
@@ -559,10 +612,61 @@ test "caller-driven operation state records native status before diagnostic erro
 
     recordNativeProgressStatus(&state, &finalized, .execute, .completed);
     try std.testing.expect(state.isQuiescent());
-    recordNativeProgressStatus(&state, &finalized, .finalize, .completed);
+    recordFinalizeNativeStatus(&state, &finalized, c.TURSO_DONE);
     try std.testing.expectError(errors.Error.UnexpectedDiagnostic, failDiagnosticForTest(errors.Error.UnexpectedDiagnostic));
     try std.testing.expect(finalized);
     try std.testing.expect(state.isQuiescent());
+}
+
+test "finalize progress changes completion state only for native DONE" {
+    var state: ProgressState = .{};
+    var finalized = false;
+
+    recordFinalizeNativeStatus(&state, &finalized, c.TURSO_ERROR);
+    try std.testing.expect(!finalized);
+    try std.testing.expect(state.isQuiescent());
+    try std.testing.expect(state.callRejection(.finalize) == null);
+
+    recordFinalizeNativeStatus(&state, &finalized, c.TURSO_IO);
+    try std.testing.expect(!finalized);
+    try std.testing.expectEqual(ProgressRejection.awaiting_io, state.callRejection(.finalize).?);
+    state.recordRunIoStatus(true);
+
+    recordFinalizeNativeStatus(&state, &finalized, c.TURSO_ERROR);
+    try std.testing.expect(!finalized);
+    try std.testing.expect(state.callRejection(.finalize) == null);
+    try std.testing.expect(!state.isQuiescent());
+
+    recordFinalizeNativeStatus(&state, &finalized, c.TURSO_OK);
+    try std.testing.expectError(errors.Error.UnexpectedDiagnostic, failDiagnosticForTest(errors.Error.UnexpectedDiagnostic));
+    try std.testing.expect(!finalized);
+    try std.testing.expect(!state.isQuiescent());
+
+    recordFinalizeNativeStatus(&state, &finalized, c.TURSO_DONE);
+    try std.testing.expect(finalized);
+    try std.testing.expect(state.isQuiescent());
+}
+
+test "statement progress sidecar registration is exact and allocation failure is bounded" {
+    var owner_state: ownership.ConnectionState = .{};
+    const fake_handle: *c.turso_statement_t = @ptrFromInt(@alignOf(*c.turso_statement_t));
+    var full_owner_state: ownership.ConnectionState = .{ .active_statements = ownership.max_active_statements };
+    try std.testing.expect(!full_owner_state.canRegisterStatement());
+
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(errors.Error.OutOfMemory, createProgressRecord(failing_allocator.allocator(), fake_handle));
+    try std.testing.expectEqual(@as(usize, 0), owner_state.active_statements);
+    try std.testing.expect(owner_state.findStatementProgressRecord(@intFromPtr(fake_handle)) == null);
+
+    const record = try createProgressRecord(std.testing.allocator, fake_handle);
+    owner_state.addStatementProgressRecord(&record.registration);
+    try std.testing.expectEqual(@as(usize, 1), owner_state.active_statements);
+    try std.testing.expect(owner_state.findStatementProgressRecord(@intFromPtr(fake_handle)) == &record.registration);
+    const removed = owner_state.removeStatementProgressRecord(@intFromPtr(fake_handle));
+    try std.testing.expect(removed == &record.registration);
+    try std.testing.expectEqual(@as(usize, 0), owner_state.active_statements);
+    try std.testing.expect(owner_state.statement_progress_records == null);
+    std.testing.allocator.destroy(record);
 }
 
 test "reset changes wrapper state only after native success" {

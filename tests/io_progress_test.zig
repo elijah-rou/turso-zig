@@ -13,6 +13,10 @@ fn createDatabase(config: turso.Database.Config) !turso.Database {
 }
 
 test "caller-driven public progress signatures are explicit" {
+    comptime if (@hasField(turso.Statement, "progress_state")) {
+        @compileError("Statement progress state must not be consumer-accessible");
+    };
+
     const open_progress: *const fn (*turso.Database) turso.Error!turso.OpenProgress = turso.Database.openProgress;
     const step_progress: *const fn (*turso.Statement) turso.Error!turso.StepProgress = turso.Statement.stepProgress;
     const execute_progress: *const fn (*turso.Statement) turso.Error!turso.ExecuteProgress = turso.Statement.executeProgress;
@@ -79,6 +83,32 @@ test "mode-specific methods reject the wrong mode with diagnostics" {
     try std.testing.expectError(turso.Error.InvalidState, caller_statement.finalize());
     try std.testing.expectError(turso.Error.InvalidState, caller_statement.runIo());
     try std.testing.expectEqualStrings("runIo requires a pending statement operation", caller_statement.latestDiagnostic().?);
+}
+
+test "statement progress sidecar OOM leaves native ownership and connection counts intact" {
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const allocator = failing_allocator.allocator();
+    var create_result = try turso.Database.create(allocator, .{ .path = ":memory:" });
+    var database = switch (create_result) {
+        .success => |value| value,
+        .failure => |*failure| {
+            defer failure.deinit(allocator);
+            return failure.category;
+        },
+    };
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+
+    failing_allocator.fail_index = failing_allocator.alloc_index + 1;
+    try std.testing.expectError(turso.Error.OutOfMemory, connection.prepareSingle("SELECT 1"));
+    try std.testing.expect(connection.latestDiagnostic() == null);
+
+    failing_allocator.fail_index = std.math.maxInt(usize);
+    var statement = try connection.prepareSingle("SELECT 1");
+    statement.deinit();
+    try connection.close();
 }
 
 test "caller-driven memory backend progresses without invented IO transitions" {

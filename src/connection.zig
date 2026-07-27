@@ -6,7 +6,8 @@ const collation = @import("collation.zig");
 const errors = @import("error.zig");
 const ownership = @import("ownership.zig");
 const progress = @import("io_progress.zig");
-const Statement = @import("statement.zig").Statement;
+const statement = @import("statement.zig");
+const Statement = statement.Statement;
 
 pub const PrepareFirstResult = struct {
     statement: ?Statement,
@@ -33,6 +34,7 @@ pub const Connection = struct {
 
     pub fn prepareSingle(self: *Connection, sql: []const u8) errors.Error!Statement {
         const handle = try self.beginOperation();
+        try self.rejectStatementLimit();
         const sql_z = try self.copySql(sql);
         defer self.allocator.free(sql_z);
 
@@ -63,12 +65,12 @@ pub const Connection = struct {
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "successful prepare returned a null statement");
             return errors.Error.InvalidHandle;
         };
-        self.owner_state.active_statements += 1;
-        return self.makeStatement(valid_statement);
+        return statement.init(self.allocator, valid_statement, self.owner_state, self.io_mode);
     }
 
     pub fn prepareFirst(self: *Connection, sql: []const u8) errors.Error!PrepareFirstResult {
         const handle = try self.beginOperation();
+        try self.rejectStatementLimit();
         const sql_z = try self.copySql(sql);
         defer self.allocator.free(sql_z);
 
@@ -89,11 +91,11 @@ pub const Connection = struct {
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "prepare tail offset exceeds SQL byte length");
             return errors.Error.InvalidValue;
         }
-        const statement = if (statement_handle) |valid_statement| value: {
-            self.owner_state.active_statements += 1;
-            break :value self.makeStatement(valid_statement);
-        } else null;
-        return .{ .statement = statement, .tail_offset = tail_offset };
+        const prepared_statement = if (statement_handle) |valid_statement|
+            try statement.init(self.allocator, valid_statement, self.owner_state, self.io_mode)
+        else
+            null;
+        return .{ .statement = prepared_statement, .tail_offset = tail_offset };
     }
 
     /// Registers or replaces a scalar callback. The callback and its deinitializer
@@ -411,6 +413,7 @@ pub const Connection = struct {
             return;
         };
         std.debug.assert(self.owner_state.active_statements == 0);
+        std.debug.assert(self.owner_state.statement_progress_records == null);
         std.debug.assert(self.database_owner_state.active_connections > 0);
 
         self.owner_state.reclaimAggregateStates();
@@ -443,6 +446,12 @@ pub const Connection = struct {
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         try errors.setDiagnostic(self.allocator, &self.diagnostic, "managed callback re-entry is not allowed");
         return errors.Error.InvalidState;
+    }
+
+    fn rejectStatementLimit(self: *Connection) errors.Error!void {
+        if (self.owner_state.canRegisterStatement()) return;
+        try errors.setDiagnostic(self.allocator, &self.diagnostic, "active statement limit of 4096 reached");
+        return errors.Error.InvalidArgument;
     }
 
     fn rejectActiveFunctionMutation(self: *Connection) errors.Error!void {
@@ -496,15 +505,6 @@ pub const Connection = struct {
             return errors.Error.InvalidArgument;
         }
         return self.allocator.dupeZ(u8, sql) catch errors.Error.OutOfMemory;
-    }
-
-    fn makeStatement(self: *Connection, handle: *c.turso_statement_t) Statement {
-        return .{
-            .allocator = self.allocator,
-            .handle = handle,
-            .connection_owner_state = self.owner_state,
-            .io_mode = self.io_mode,
-        };
     }
 };
 

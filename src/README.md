@@ -47,5 +47,15 @@ and never carry managed ERROR values; decoding those ABI tags remains defensive
 source-level coverage.
 
 Managed collations are verified for expression comparison and sorting only.
-The wrapper does not claim schema or index support. Cloud sync, loadable
-extensions, and async I/O are outside the implemented v0 surface.
+The wrapper does not claim schema or index support. Extension controls include
+the per-connection SQL loading gate and explicit `loadExtensionUnsafe` for
+trusted absolute paths. Extension loading remains an unsafe native-code trust
+boundary: there is no sandbox or unload operation, and a native failure after
+loading may be unrecoverable.
+
+Caller-driven I/O is implemented for statement execute, step, finalize, and
+`runIo` progress on the default, memory, and syscall VFS backends. It is
+exclusive-use and caller-scheduled, not an async executor. Database open also
+reports native progress, but Turso SDK Kit 0.7.1 exposes no database `run_io`
+driver; an open that returns `TURSO_IO` cannot be advanced through this wrapper.
+Cloud sync remains outside the implemented v0 surface.
