@@ -582,7 +582,7 @@ const ReentryContext = struct {
 fn reentryScalar(context: *ReentryContext, _: turso.CallbackArgs) turso.CallbackResult {
     _ = context.connection.prepareSingle("SELECT 1") catch |err| {
         context.callback_rejected.* = err == turso.Error.InvalidState and
-            std.mem.eql(u8, context.connection.latestDiagnostic() orelse "", "scalar callback re-entry is not allowed");
+            std.mem.eql(u8, context.connection.latestDiagnostic() orelse "", "managed callback re-entry is not allowed");
     };
     context.connection.setBusyTimeoutMs(0) catch {};
     _ = context.connection.autocommit();
@@ -641,7 +641,7 @@ test "scalar callback and deinitializer reject all owner reentry without native 
     try connection.close();
 }
 
-test "prepared programs delay retired scalar context destruction" {
+test "prepared programs block scalar replacement until deinit" {
     var database = try openDatabase(":memory:");
     defer database.deinit();
     try database.open();
@@ -655,13 +655,15 @@ test "prepared programs delay retired scalar context destruction" {
         .deinit = scalarDeinit,
     });
     var prepared = try connection.prepareSingle("SELECT zig_prepared()");
-    try connection.registerScalarFunction("zig_prepared", .{ .fixed = 0 }, true, turso.ScalarFunction(ScalarContext){
+    const replacement = turso.ScalarFunction(ScalarContext){
         .context = .{ .deinits = &deinits, .mode = .replacement },
         .call = scalarCall,
         .deinit = scalarDeinit,
-    });
+    };
+    try std.testing.expectError(turso.Error.InvalidState, connection.registerScalarFunction("zig_prepared", .{ .fixed = 0 }, true, replacement));
     try std.testing.expectEqual(@as(usize, 0), deinits);
     prepared.deinit();
+    try connection.registerScalarFunction("zig_prepared", .{ .fixed = 0 }, true, replacement);
     try std.testing.expectEqual(@as(usize, 1), deinits);
     try connection.unregisterFunction("zig_prepared");
     try std.testing.expectEqual(@as(usize, 2), deinits);
@@ -859,12 +861,11 @@ test "managed aggregates cover fixed variadic zero-row groups DISTINCT and FILTE
     defer filtered.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i64, 7), filtered.integer);
     var step_failure = try connection.prepareSingle("SELECT zig_sum('bad')");
-    defer step_failure.deinit();
     try std.testing.expectError(turso.Error.SqlError, step_failure.step());
     try std.testing.expect(std.mem.indexOf(u8, step_failure.latestDiagnostic() orelse "", "integer required") != null);
+    step_failure.deinit();
 
     var groups = try connection.prepareSingle("SELECT g, zig_sum(v) FROM aggregate_values GROUP BY g ORDER BY g");
-    defer groups.deinit();
     try std.testing.expectEqual(turso.Step.row, try groups.step());
     var first = try groups.value(1);
     defer first.deinit(std.testing.allocator);
@@ -874,6 +875,7 @@ test "managed aggregates cover fixed variadic zero-row groups DISTINCT and FILTE
     defer second.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i64, 9), second.integer);
     try std.testing.expectEqual(turso.Step.done, try groups.step());
+    groups.deinit();
 
     try connection.registerAggregateFunction("zig_variadic_sum", .variadic, sumAggregate(&context_deinits));
     var variadic = try queryValue(&connection, "SELECT zig_variadic_sum(v, 1) FROM aggregate_values");
@@ -973,6 +975,213 @@ test "aggregate callbacks and destructors reject connection and statement reentr
     try std.testing.expect(deinit_rejected);
 }
 
+const ExternalAggregateCounters = struct {
+    inits: usize = 0,
+    steps: usize = 0,
+    finals: usize = 0,
+    state_deinits: usize = 0,
+    context_deinits: usize = 0,
+};
+const ExternalAggregateContext = struct { counters: *ExternalAggregateCounters };
+fn externalInit(context: *ExternalAggregateContext) ?i64 {
+    context.counters.inits += 1;
+    return 0;
+}
+fn externalStep(context: *ExternalAggregateContext, state: *i64, args: turso.CallbackArgs) turso.CallbackResult {
+    context.counters.steps += 1;
+    for (args.values) |value| if (value == .integer) {
+        state.* += value.integer;
+    };
+    return .null;
+}
+fn externalFinal(context: *ExternalAggregateContext, state: *i64) turso.CallbackResult {
+    context.counters.finals += 1;
+    return .{ .integer = state.* };
+}
+fn externalStateDeinit(context: *ExternalAggregateContext, _: *i64) void {
+    context.counters.state_deinits += 1;
+}
+fn externalContextDeinit(context: *ExternalAggregateContext) void {
+    context.counters.context_deinits += 1;
+}
+fn externalAggregate(counters: *ExternalAggregateCounters) turso.AggregateFunction(ExternalAggregateContext, i64) {
+    return .{
+        .context = .{ .counters = counters },
+        .init = externalInit,
+        .step = externalStep,
+        .final = externalFinal,
+        .state_deinit = externalStateDeinit,
+        .context_deinit = externalContextDeinit,
+    };
+}
+
+test "window peers retire aggregate state without repeated-destructor UAF" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var counters: ExternalAggregateCounters = .{};
+    try connection.registerAggregateFunction("zig_window_sum", .{ .fixed = 1 }, externalAggregate(&counters));
+
+    var statement = try connection.prepareSingle(
+        "SELECT zig_window_sum(v) OVER (ORDER BY v RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) " ++
+            "FROM (SELECT 1 AS v UNION ALL SELECT 1 UNION ALL SELECT 2) ORDER BY v",
+    );
+    errdefer statement.deinit();
+    try std.testing.expectEqual(turso.Step.row, try statement.step());
+    var first = try statement.value(0);
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 2), first.integer);
+    try std.testing.expectEqual(turso.Step.row, try statement.step());
+    var peer = try statement.value(0);
+    defer peer.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 2), peer.integer);
+    try std.testing.expectError(turso.Error.SqlError, statement.step());
+    try std.testing.expect(std.mem.indexOf(u8, statement.latestDiagnostic() orelse "", "Invalid Argument") != null);
+    statement.deinit();
+    try std.testing.expectEqual(counters.inits, counters.state_deinits);
+    try std.testing.expectEqual(@as(usize, 1), counters.finals);
+    try connection.unregisterFunction("zig_window_sum");
+    try std.testing.expectEqual(@as(usize, 1), counters.context_deinits);
+}
+
+fn managedErrorStep(context: *ExternalAggregateContext, _: *i64, _: turso.CallbackArgs) turso.CallbackResult {
+    context.counters.steps += 1;
+    return .{ .managed_error = .{ .code = .custom_error, .message = "step counter error" } };
+}
+fn managedErrorFinal(context: *ExternalAggregateContext, _: *i64) turso.CallbackResult {
+    context.counters.finals += 1;
+    return .{ .managed_error = .{ .code = .custom_error, .message = "final counter error" } };
+}
+
+test "aggregate step and final managed errors reclaim state with exact counters" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+
+    var step_counters: ExternalAggregateCounters = .{};
+    try connection.registerAggregateFunction("zig_step_error", .{ .fixed = 1 }, turso.AggregateFunction(ExternalAggregateContext, i64){
+        .context = .{ .counters = &step_counters },
+        .init = externalInit,
+        .step = managedErrorStep,
+        .final = externalFinal,
+        .state_deinit = externalStateDeinit,
+        .context_deinit = externalContextDeinit,
+    });
+    var step_statement = try connection.prepareSingle("SELECT zig_step_error(1)");
+    try std.testing.expectError(turso.Error.SqlError, step_statement.step());
+    step_statement.deinit();
+    try std.testing.expectEqual(@as(usize, 1), step_counters.inits);
+    try std.testing.expectEqual(@as(usize, 1), step_counters.steps);
+    try std.testing.expectEqual(@as(usize, 1), step_counters.state_deinits);
+    try connection.unregisterFunction("zig_step_error");
+    try std.testing.expectEqual(@as(usize, 1), step_counters.context_deinits);
+
+    var final_counters: ExternalAggregateCounters = .{};
+    try connection.registerAggregateFunction("zig_final_error", .{ .fixed = 1 }, turso.AggregateFunction(ExternalAggregateContext, i64){
+        .context = .{ .counters = &final_counters },
+        .init = externalInit,
+        .step = externalStep,
+        .final = managedErrorFinal,
+        .state_deinit = externalStateDeinit,
+        .context_deinit = externalContextDeinit,
+    });
+    var final_statement = try connection.prepareSingle("SELECT zig_final_error(1)");
+    try std.testing.expectError(turso.Error.SqlError, final_statement.step());
+    final_statement.deinit();
+    try std.testing.expectEqual(@as(usize, 1), final_counters.inits);
+    try std.testing.expectEqual(@as(usize, 1), final_counters.finals);
+    try std.testing.expectEqual(@as(usize, 1), final_counters.state_deinits);
+    try connection.unregisterFunction("zig_final_error");
+    try std.testing.expectEqual(@as(usize, 1), final_counters.context_deinits);
+}
+
+test "aggregate reset abandonment is reclaimed when the final statement deinitializes" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var counters: ExternalAggregateCounters = .{};
+    try connection.registerAggregateFunction("zig_abandoned", .{ .fixed = 1 }, externalAggregate(&counters));
+
+    var aggregate_statement = try connection.prepareSingle(
+        "SELECT g, zig_abandoned(v) FROM (SELECT 1 AS g, 1 AS v UNION ALL SELECT 2, 2 UNION ALL SELECT 3, 3) GROUP BY g ORDER BY g",
+    );
+    var keeper = try connection.prepareSingle("SELECT 1");
+    try std.testing.expectEqual(turso.Step.row, try aggregate_statement.step());
+    try aggregate_statement.reset();
+    aggregate_statement.deinit();
+    try std.testing.expect(counters.inits >= counters.state_deinits);
+    keeper.deinit();
+    try std.testing.expectEqual(counters.inits, counters.state_deinits);
+    try connection.unregisterFunction("zig_abandoned");
+    try std.testing.expectEqual(@as(usize, 1), counters.context_deinits);
+}
+
+const ReentryPhase = enum { init, step, final, state_deinit, context_deinit };
+const AggregatePhaseContext = struct {
+    connection: *turso.Connection,
+    phase: ReentryPhase,
+    rejected: *bool,
+};
+fn attemptAggregateReentry(context: *AggregatePhaseContext) void {
+    var unexpected = context.connection.prepareSingle("SELECT 1") catch |err| {
+        context.rejected.* = err == turso.Error.InvalidState;
+        return;
+    };
+    unexpected.deinit();
+}
+fn phaseInit(context: *AggregatePhaseContext) ?u8 {
+    if (context.phase == .init) attemptAggregateReentry(context);
+    return 0;
+}
+fn phaseStep(context: *AggregatePhaseContext, _: *u8, _: turso.CallbackArgs) turso.CallbackResult {
+    if (context.phase == .step) attemptAggregateReentry(context);
+    return .null;
+}
+fn phaseFinal(context: *AggregatePhaseContext, _: *u8) turso.CallbackResult {
+    if (context.phase == .final) attemptAggregateReentry(context);
+    return .{ .integer = 1 };
+}
+fn phaseStateDeinit(context: *AggregatePhaseContext, _: *u8) void {
+    if (context.phase == .state_deinit) attemptAggregateReentry(context);
+}
+fn phaseContextDeinit(context: *AggregatePhaseContext) void {
+    if (context.phase == .context_deinit) attemptAggregateReentry(context);
+}
+
+test "aggregate init step final state and context reentry guards restore independently" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+
+    inline for (std.enums.values(ReentryPhase)) |phase| {
+        var rejected = false;
+        try connection.registerAggregateFunction("zig_phase", .{ .fixed = 1 }, turso.AggregateFunction(AggregatePhaseContext, u8){
+            .context = .{ .connection = &connection, .phase = phase, .rejected = &rejected },
+            .init = phaseInit,
+            .step = phaseStep,
+            .final = phaseFinal,
+            .state_deinit = phaseStateDeinit,
+            .context_deinit = phaseContextDeinit,
+        });
+        var statement = try connection.prepareSingle("SELECT zig_phase(1)");
+        switch (phase) {
+            .init, .step, .final => try std.testing.expectError(turso.Error.SqlError, statement.step()),
+            .state_deinit, .context_deinit => try std.testing.expectEqual(turso.Step.row, try statement.step()),
+        }
+        statement.deinit();
+        try connection.unregisterFunction("zig_phase");
+        try std.testing.expect(rejected);
+    }
+}
+
 const AggregateLifetimeContext = struct {
     state_deinits: *usize,
     context_deinits: *usize,
@@ -1004,6 +1213,32 @@ fn lifetimeAggregate(state_deinits: *usize, context_deinits: *usize) turso.Aggre
     };
 }
 
+test "function table mutations wait for every aggregate statement to deinit" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var state_deinits: usize = 0;
+    var context_deinits: usize = 0;
+
+    try connection.registerAggregateFunction("zig_lifetime", .{ .fixed = 1 }, lifetimeAggregate(&state_deinits, &context_deinits));
+    var first = try connection.prepareSingle("SELECT g, zig_lifetime(v) FROM (SELECT 1 AS g, 1 AS v UNION ALL SELECT 1, 2 UNION ALL SELECT 2, 3) GROUP BY g ORDER BY g");
+    var second = try connection.prepareSingle("SELECT zig_lifetime(v) FROM (SELECT 4 AS v UNION ALL SELECT 5)");
+    try std.testing.expectEqual(turso.Step.row, try first.step());
+
+    try std.testing.expectError(turso.Error.InvalidState, connection.registerAggregateFunction("zig_lifetime", .{ .fixed = 1 }, lifetimeAggregate(&state_deinits, &context_deinits)));
+    try std.testing.expectEqualStrings("function table cannot be mutated while statements are active", connection.latestDiagnostic().?);
+    try std.testing.expectError(turso.Error.InvalidState, connection.registerScalarFunction("zig_lifetime", .{ .fixed = 0 }, false, turso.ScalarFunction(void){ .context = {}, .call = countScalar }));
+    try std.testing.expectError(turso.Error.InvalidState, connection.unregisterFunction("zig_lifetime"));
+
+    first.deinit();
+    try std.testing.expectError(turso.Error.InvalidState, connection.unregisterFunction("zig_lifetime"));
+    second.deinit();
+    try connection.registerAggregateFunction("zig_lifetime", .{ .fixed = 1 }, lifetimeAggregate(&state_deinits, &context_deinits));
+    try connection.unregisterFunction("zig_lifetime");
+}
+
 test "aggregate replacement unregister failures and connection teardown own lifetimes exactly once" {
     var database = try openDatabase(":memory:");
     defer database.deinit();
@@ -1019,18 +1254,16 @@ test "aggregate replacement unregister failures and connection teardown own life
         try std.testing.expectEqual(@as(usize, 1), state_deinits);
 
         var retired = try connection.prepareSingle("SELECT zig_lifetime(v) FROM (SELECT 1 AS v)");
-        try connection.registerAggregateFunction("zig_lifetime", .{ .fixed = 1 }, lifetimeAggregate(&state_deinits, &context_deinits));
-        try std.testing.expectEqual(@as(usize, 1), context_deinits);
+        try std.testing.expectError(turso.Error.InvalidState, connection.registerAggregateFunction("zig_lifetime", .{ .fixed = 1 }, lifetimeAggregate(&state_deinits, &context_deinits)));
+        try std.testing.expectEqual(@as(usize, 0), context_deinits);
         retired.deinit();
+        try connection.registerAggregateFunction("zig_lifetime", .{ .fixed = 1 }, lifetimeAggregate(&state_deinits, &context_deinits));
         try std.testing.expectEqual(@as(usize, 1), context_deinits);
 
         var failure = try connection.prepareSingle("SELECT zig_lifetime('bad')");
-        // This aggregate accepts every value; use the fixed-arity mismatch to
-        // verify native failure does not consume the active registration.
-        try std.testing.expectError(turso.Error.SqlError, connection.prepareSingle("SELECT zig_lifetime()"));
-        try connection.unregisterFunction("zig_lifetime");
-        try std.testing.expectEqual(@as(usize, 2), context_deinits);
+        try std.testing.expectError(turso.Error.InvalidState, connection.unregisterFunction("zig_lifetime"));
         failure.deinit();
+        try connection.unregisterFunction("zig_lifetime");
         try std.testing.expectEqual(@as(usize, 2), context_deinits);
         try std.testing.expectError(turso.Error.SqlError, connection.prepareSingle("SELECT zig_lifetime(1)"));
 

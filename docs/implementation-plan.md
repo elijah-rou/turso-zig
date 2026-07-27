@@ -65,10 +65,14 @@ Managed scalar functions use heap-stable typed contexts and bounded borrowed
 arguments. Native ownership is authoritative only after raw `TURSO_OK`; earlier
 failure leaves context cleanup with the caller. A heap-stable connection guard
 blocks callback and context-deinitializer reentry through every connection and
-statement operation without another native call. Replacement, unregister,
-delayed prepared-program release, and connection teardown determine context
-destruction. Turso 0.7.1 loses JSON subtype on SQL callback arguments and cannot
-supply ERROR arguments; those decoder cases remain ABI-defensive. JSON results
+statement operation without another native call. Replacement, unregister, and
+connection teardown determine context destruction. Turso 0.7.1 prepared
+programs copy function entries without
+retaining registration ownership, so the safe API rejects every scalar or
+aggregate registration, replacement, and unregister operation while any
+statement exists on that connection. Turso 0.7.1 loses JSON subtype on SQL
+callback arguments and cannot supply ERROR arguments; those decoder cases
+remain ABI-defensive. JSON results
 and text/blob/error results are copied into at most 16 MiB of package-owned
 backing and released by the always-supplied value destructor.
 
@@ -76,11 +80,15 @@ Managed aggregates add a typed per-group state initialized into heap-stable
 boxes. Step/final callbacks reuse the scalar argument/result codec and always
 supply the value destructor. Turso 0.7.1 statement reset and teardown can
 replace aggregate registers without invoking `aggregate_destructor`, so each
-registration owns a bounded 4096-live-state registry. Native destruction
-removes and frees normal state exactly once; registration destruction runs only
-after native programs can no longer refer to the boxes and reclaims abandoned
-state. Repeated step/final calls and pointers absent from the live registry
-return managed errors without dereferencing the candidate state.
+registration owns a bounded registry of 4096 live, retired, or abandoned state
+boxes. Native destruction tombstones state and invokes its deinitializer once
+without freeing the address; repeated destruction is idempotent, while later
+step/final calls on retired state return managed errors. When the active
+statement count reaches zero, the connection reclaims every registration's
+tombstones and abandoned states exactly once. Zero-statement context destruction
+also performs reclamation before removing its registration from the explicit
+heap-stable connection list. The 4097th retained state fails with managed
+out-of-range before initialization or allocation.
 
 Defer cloud sync, collations, loadable extensions, and async I/O. Each deferred
 area requires a separate ownership, scheduler, or trust-boundary design.

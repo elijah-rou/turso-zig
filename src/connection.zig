@@ -116,6 +116,7 @@ pub const Connection = struct {
         }
 
         const handle = try self.beginOperation();
+        try self.rejectActiveFunctionMutation();
         const native_arity: c_int = switch (arity) {
             .variadic => -1,
             .fixed => |count| if (count <= callback_value.max_callback_args)
@@ -188,6 +189,7 @@ pub const Connection = struct {
         }
 
         const handle = try self.beginOperation();
+        try self.rejectActiveFunctionMutation();
         const native_arity: c_int = switch (arity) {
             .variadic => -1,
             .fixed => |count| if (count <= callback_value.max_callback_args)
@@ -198,6 +200,10 @@ pub const Connection = struct {
             },
         };
         try self.validateFunctionName(name);
+        if (!self.owner_state.canRegisterAggregate()) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "aggregate registration limit of 4096 reached");
+            return errors.Error.InvalidArgument;
+        }
 
         const name_z = self.allocator.dupeZ(u8, name) catch return errors.Error.OutOfMemory;
         defer self.allocator.free(name_z);
@@ -226,12 +232,14 @@ pub const Connection = struct {
             &error_opt_out,
         );
         transferred = registrationTransfersOwnership(status);
+        if (transferred) self.owner_state.addAggregateRegistration(&box.registration);
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
     }
 
     pub fn unregisterFunction(self: *Connection, name: []const u8) errors.Error!void {
         const handle = try self.beginOperation();
+        try self.rejectActiveFunctionMutation();
         try self.validateFunctionName(name);
         const name_z = self.allocator.dupeZ(u8, name) catch return errors.Error.OutOfMemory;
         defer self.allocator.free(name_z);
@@ -311,7 +319,9 @@ pub const Connection = struct {
         std.debug.assert(self.owner_state.active_statements == 0);
         std.debug.assert(self.database_owner_state.active_connections > 0);
 
+        self.owner_state.reclaimAggregateStates();
         c.turso_connection_deinit(handle);
+        std.debug.assert(self.owner_state.aggregate_registration_count == 0);
         self.handle = null;
         self.database_owner_state.active_connections -= 1;
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
@@ -337,7 +347,13 @@ pub const Connection = struct {
         if (!self.owner_state.callback_active) return;
         self.owner_state.recordCallbackViolation();
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
-        try errors.setDiagnostic(self.allocator, &self.diagnostic, "scalar callback re-entry is not allowed");
+        try errors.setDiagnostic(self.allocator, &self.diagnostic, "managed callback re-entry is not allowed");
+        return errors.Error.InvalidState;
+    }
+
+    fn rejectActiveFunctionMutation(self: *Connection) errors.Error!void {
+        if (self.owner_state.active_statements == 0) return;
+        try errors.setDiagnostic(self.allocator, &self.diagnostic, "function table cannot be mutated while statements are active");
         return errors.Error.InvalidState;
     }
 
@@ -345,7 +361,7 @@ pub const Connection = struct {
         if (name.len == 0 or name.len > 255 or std.mem.indexOfScalar(u8, name, 0) != null or
             !std.unicode.utf8ValidateSlice(name))
         {
-            try errors.setDiagnostic(self.allocator, &self.diagnostic, "scalar function name must be 1..255 UTF-8 bytes without NUL");
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "function name must be 1..255 UTF-8 bytes without NUL");
             return errors.Error.InvalidArgument;
         }
     }

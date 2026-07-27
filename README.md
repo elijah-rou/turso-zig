@@ -83,11 +83,13 @@ Turso copies them.
 
 Callbacks and context deinitializers must not panic or re-enter their owning
 connection or its statements. Reentry is rejected without crossing the C
-boundary and makes an active callback return a managed SQL error. Native
-ownership begins only after successful registration. Before success, the caller
-retains context ownership. After success, replacement, `unregisterFunction`,
-prepared-program release, or connection teardown calls the context
-deinitializer exactly once.
+boundary and makes an active callback return a managed SQL error. Native ownership begins only after successful registration. Before success, the
+caller retains context ownership. Because Turso 0.7.1 prepared programs copy
+function entries without retaining their registration ownership, every scalar
+or aggregate registration, replacement, and `unregisterFunction` call returns
+`InvalidState` while any statement exists on the connection. After all
+statements are deinitialized, replacement, unregister, or connection teardown
+calls the context deinitializer exactly once.
 
 ## Managed aggregate functions
 
@@ -98,14 +100,18 @@ copied managed result, and optional state/context deinitializers run exactly
 once. A null initializer result or wrapper allocation failure becomes a managed
 SQL error rather than a null dereference.
 
-Turso 0.7.1 can discard an external aggregate register during statement reset
-or teardown without invoking its aggregate destructor. Each registration
-therefore retains a bounded registry of at most 4096 simultaneously live stable
-state boxes. Normal native destruction removes and frees its state immediately;
-registration destruction, after native programs can no longer reference those
-boxes, reclaims any abandoned live state. Exhausting the bound returns a managed
-out-of-range error. Aggregate callbacks and both deinitializers share the same
-non-reentry and non-panicking contract as scalar callbacks.
+Turso 0.7.1 can repeat an aggregate destructor for window programs and can
+also discard an external aggregate register during statement reset or teardown
+without invoking that destructor. Each registration therefore retains a bounded
+registry of at most 4096 live, retired, or abandoned stable state boxes. Native
+destruction tombstones a box and runs its state deinitializer exactly once;
+repeated destruction is idempotent, and later step/final calls on that retired
+state return a managed error. Tombstone backing and abandoned states are freed
+only when the connection's active statement count reaches zero, or during
+zero-statement context destruction. Exhausting the retained-state bound returns
+a managed out-of-range error before state initialization or allocation.
+Aggregate callbacks and both deinitializers share the same non-reentry and
+non-panicking contract as scalar callbacks.
 
 ## Basic use
 
