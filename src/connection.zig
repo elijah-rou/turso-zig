@@ -5,6 +5,7 @@ const callback_value = @import("callback_value.zig");
 const collation = @import("collation.zig");
 const errors = @import("error.zig");
 const ownership = @import("ownership.zig");
+const progress = @import("io_progress.zig");
 const Statement = @import("statement.zig").Statement;
 
 pub const PrepareFirstResult = struct {
@@ -17,6 +18,7 @@ pub const Connection = struct {
     handle: ?*c.turso_connection_t,
     database_owner_state: *ownership.DatabaseState,
     owner_state: *ownership.ConnectionState,
+    io_mode: progress.IoMode,
     diagnostic: ?[]u8 = null,
     closed: bool = false,
 
@@ -501,6 +503,7 @@ pub const Connection = struct {
             .allocator = self.allocator,
             .handle = handle,
             .connection_owner_state = self.owner_state,
+            .io_mode = self.io_mode,
         };
     }
 };

@@ -54,6 +54,16 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run SDK tests");
     test_step.dependOn(&run_sdk_tests.step);
 
+    const io_progress_module = b.createModule(.{
+        .root_source_file = b.path("tests/io_progress_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    io_progress_module.addImport("turso", module);
+    const io_progress_tests = b.addTest(.{ .root_module = io_progress_module });
+    const run_io_progress_tests = b.addRunArtifact(io_progress_tests);
+    test_step.dependOn(&run_io_progress_tests.step);
+
     const isolated_tests = [_]struct { name: []const u8, path: []const u8 }{
         .{ .name = "turso-setup-invalid-test", .path = "tests/setup_invalid.zig" },
         .{ .name = "turso-setup-logger-test", .path = "tests/setup_logger.zig" },

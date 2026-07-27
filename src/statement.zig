@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @import("c_api.zig").raw;
 const errors = @import("error.zig");
 const ownership = @import("ownership.zig");
+const progress = @import("io_progress.zig");
 const Value = @import("value.zig").Value;
 
 pub const Step = enum { row, done };
@@ -19,7 +20,9 @@ pub const Statement = struct {
     allocator: std.mem.Allocator,
     handle: ?*c.turso_statement_t,
     connection_owner_state: *ownership.ConnectionState,
+    io_mode: progress.IoMode,
     diagnostic: ?[]u8 = null,
+    progress_state: progress.State = .{},
     row_available: bool = false,
     finalized: bool = false,
 
@@ -70,7 +73,7 @@ pub const Statement = struct {
     }
 
     pub fn execute(self: *Statement) errors.Error!u64 {
-        const handle = try self.beginMutation();
+        const handle = try self.beginSynchronousOperation();
         var changes_count: u64 = 0;
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_execute(handle, &changes_count, &error_opt_out);
@@ -86,7 +89,7 @@ pub const Statement = struct {
     }
 
     pub fn step(self: *Statement) errors.Error!Step {
-        const handle = try self.beginMutation();
+        const handle = try self.beginSynchronousOperation();
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_step(handle, &error_opt_out);
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
@@ -108,22 +111,113 @@ pub const Statement = struct {
         }
     }
 
+    pub fn executeProgress(self: *Statement) errors.Error!progress.ExecuteProgress {
+        const handle = try self.beginProgressOperation(.execute);
+        var changes_count: u64 = 0;
+        var error_opt_out: [*c]const u8 = null;
+        const status = c.turso_statement_execute(handle, &changes_count, &error_opt_out);
+        return switch (status) {
+            c.TURSO_DONE => value: {
+                try self.finishProgressSuccess(.execute, error_opt_out);
+                break :value .{ .done = changes_count };
+            },
+            c.TURSO_IO => value: {
+                try self.finishProgressIo(.execute, error_opt_out);
+                break :value .needs_io;
+            },
+            else => self.finishProgressError(.execute, status, error_opt_out),
+        };
+    }
+
+    pub fn stepProgress(self: *Statement) errors.Error!progress.StepProgress {
+        const handle = try self.beginProgressOperation(.step);
+        var error_opt_out: [*c]const u8 = null;
+        const status = c.turso_statement_step(handle, &error_opt_out);
+        return switch (status) {
+            c.TURSO_ROW => value: {
+                try self.finishProgressSuccess(.step, error_opt_out);
+                self.row_available = true;
+                break :value .row;
+            },
+            c.TURSO_DONE => value: {
+                try self.finishProgressSuccess(.step, error_opt_out);
+                break :value .done;
+            },
+            c.TURSO_IO => value: {
+                try self.finishProgressIo(.step, error_opt_out);
+                break :value .needs_io;
+            },
+            else => self.finishProgressError(.step, status, error_opt_out),
+        };
+    }
+
+    pub fn runIo(self: *Statement) errors.Error!void {
+        try self.rejectCallbackReentry();
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
+        self.row_available = false;
+        const handle = self.handle orelse {
+            std.debug.assert(false);
+            return errors.Error.InvalidState;
+        };
+        if (self.io_mode != .caller_driven) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "runIo requires caller-driven I/O mode");
+            return errors.Error.InvalidState;
+        }
+        const pending = self.progress_state.pending orelse {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "runIo requires a pending statement operation");
+            return errors.Error.InvalidState;
+        };
+        if (pending.phase != .awaiting_io) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "pending operation must be retried before running more I/O");
+            return errors.Error.InvalidState;
+        }
+
+        var error_opt_out: [*c]const u8 = null;
+        const status = c.turso_statement_run_io(handle, &error_opt_out);
+        const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
+        if (status == c.TURSO_OK) {
+            self.progress_state.ioCompleted();
+            return errors.rejectUnexpectedDiagnostic(self.allocator, copied);
+        }
+        self.diagnostic = copied;
+        return errors.statusToError(status);
+    }
+
     pub fn reset(self: *Statement) errors.Error!void {
         const handle = try self.beginMutationAllowFinalized();
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_reset(handle, &error_opt_out);
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         try errors.finishExpected(self.allocator, status, c.TURSO_OK, error_opt_out, &self.diagnostic);
+        self.progress_state.abort();
         self.finalized = false;
     }
 
     pub fn finalize(self: *Statement) errors.Error!void {
-        const handle = try self.beginMutation();
+        const handle = try self.beginSynchronousOperation();
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_finalize(handle, &error_opt_out);
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         try errors.finishExpected(self.allocator, status, c.TURSO_DONE, error_opt_out, &self.diagnostic);
         self.finalized = true;
+    }
+
+    pub fn finalizeProgress(self: *Statement) errors.Error!progress.FinalizeProgress {
+        const handle = try self.beginProgressOperation(.finalize);
+        var error_opt_out: [*c]const u8 = null;
+        const status = c.turso_statement_finalize(handle, &error_opt_out);
+        return switch (status) {
+            c.TURSO_DONE => value: {
+                try self.finishProgressSuccess(.finalize, error_opt_out);
+                self.finalized = true;
+                break :value .done;
+            },
+            c.TURSO_IO => value: {
+                try self.finishProgressIo(.finalize, error_opt_out);
+                break :value .needs_io;
+            },
+            else => self.finishProgressError(.finalize, status, error_opt_out),
+        };
     }
 
     pub fn changes(self: *const Statement) i64 {
@@ -242,6 +336,7 @@ pub const Statement = struct {
             self.connection_owner_state.reclaimAggregateStates();
         }
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
+        self.progress_state.abort();
         self.row_available = false;
         self.finalized = true;
     }
@@ -265,6 +360,58 @@ pub const Statement = struct {
         return position;
     }
 
+    fn beginSynchronousOperation(self: *Statement) errors.Error!*c.turso_statement_t {
+        const handle = try self.beginMutation();
+        if (self.io_mode == .caller_driven) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "synchronous statement methods are unavailable in caller-driven I/O mode");
+            return errors.Error.InvalidState;
+        }
+        return handle;
+    }
+
+    fn beginProgressOperation(self: *Statement, operation: progress.Operation) errors.Error!*c.turso_statement_t {
+        try self.rejectCallbackReentry();
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
+        self.row_available = false;
+        const handle = self.handle orelse {
+            std.debug.assert(false);
+            return errors.Error.InvalidState;
+        };
+        if (self.finalized) return errors.Error.InvalidState;
+        if (self.io_mode != .caller_driven) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "progress methods require caller-driven I/O mode");
+            return errors.Error.InvalidState;
+        }
+        if (self.progress_state.callRejection(operation)) |rejection| {
+            const message = switch (rejection) {
+                .awaiting_io => "pending statement operation requires runIo before retry",
+                .wrong_operation => "pending statement operation requires retry of the same operation",
+            };
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, message);
+            return errors.Error.InvalidState;
+        }
+        return handle;
+    }
+
+    fn finishProgressSuccess(self: *Statement, operation: progress.Operation, error_opt_out: [*c]const u8) errors.Error!void {
+        const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
+        self.progress_state.operationCompleted(operation);
+        try errors.rejectUnexpectedDiagnostic(self.allocator, copied);
+    }
+
+    fn finishProgressIo(self: *Statement, operation: progress.Operation, error_opt_out: [*c]const u8) errors.Error!void {
+        const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
+        try errors.rejectUnexpectedDiagnostic(self.allocator, copied);
+        self.progress_state.needsIo(operation);
+    }
+
+    fn finishProgressError(self: *Statement, operation: progress.Operation, status: c.turso_status_code_t, error_opt_out: [*c]const u8) errors.Error {
+        const copied = errors.copyAndFreeDiagnostic(self.allocator, error_opt_out) catch return errors.Error.OutOfMemory;
+        self.progress_state.operationCompleted(operation);
+        self.diagnostic = copied;
+        return errors.statusToError(status);
+    }
+
     fn beginMutation(self: *Statement) errors.Error!*c.turso_statement_t {
         try self.rejectCallbackReentry();
         if (self.handle == null) {
@@ -272,6 +419,11 @@ pub const Statement = struct {
             return errors.Error.InvalidState;
         }
         if (self.finalized) return errors.Error.InvalidState;
+        if (self.progress_state.pending != null) {
+            errors.clearDiagnostic(self.allocator, &self.diagnostic);
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "pending statement operation must be reset or completed");
+            return errors.Error.InvalidState;
+        }
         return self.beginMutationAllowFinalized();
     }
 
