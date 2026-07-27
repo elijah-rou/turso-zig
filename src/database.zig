@@ -175,21 +175,21 @@ pub const Database = struct {
 
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_database_open(handle, &error_opt_out);
-        const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
+        recordOpenStatus(&self.opened, &self.open_needs_io_without_driver, status);
         switch (status) {
             c.TURSO_OK => {
+                const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
                 try errors.rejectUnexpectedDiagnostic(self.allocator, copied);
-                self.opened = true;
                 return .ready;
             },
             c.TURSO_IO => {
+                const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
                 try errors.rejectUnexpectedDiagnostic(self.allocator, copied);
-                self.open_needs_io_without_driver = true;
                 try errors.setDiagnostic(self.allocator, &self.diagnostic, "database open needs I/O, but Turso SDK Kit 0.7.1 exposes no database run_io driver");
                 return .needs_io_without_driver;
             },
             else => {
-                self.diagnostic = copied;
+                self.diagnostic = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
                 return errors.statusToError(status);
             },
         }
@@ -281,6 +281,37 @@ const StoredConfig = struct {
         if (self.encryption_hexkey) |value| allocator.free(value);
     }
 };
+
+fn recordOpenStatus(
+    opened: *bool,
+    needs_io_without_driver: *bool,
+    status: c.turso_status_code_t,
+) void {
+    switch (status) {
+        c.TURSO_OK => opened.* = true,
+        c.TURSO_IO => needs_io_without_driver.* = true,
+        else => {},
+    }
+}
+
+fn failOpenDiagnosticForTest(failure: errors.Error) errors.Error!void {
+    return failure;
+}
+
+test "caller-driven open records terminal native statuses before diagnostic errors" {
+    var opened = false;
+    var needs_io_without_driver = false;
+
+    recordOpenStatus(&opened, &needs_io_without_driver, c.TURSO_OK);
+    try std.testing.expectError(errors.Error.OutOfMemory, failOpenDiagnosticForTest(errors.Error.OutOfMemory));
+    try std.testing.expect(opened);
+
+    opened = false;
+    recordOpenStatus(&opened, &needs_io_without_driver, c.TURSO_IO);
+    try std.testing.expectError(errors.Error.UnexpectedDiagnostic, failOpenDiagnosticForTest(errors.Error.UnexpectedDiagnostic));
+    try std.testing.expect(!opened);
+    try std.testing.expect(needs_io_without_driver);
+}
 
 fn callerDrivenVfsIsSupported(vfs: ?[]const u8) bool {
     const name = vfs orelse return true;

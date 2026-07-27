@@ -96,8 +96,12 @@ with `.caller_driven`, then use `openProgress`, `executeProgress`,
 `stepProgress`, `finalizeProgress`, and one-step `runIo`. Progress methods never
 loop: an operation returning `.needs_io` must be followed by exactly one
 successful `runIo`, then a retry of that same operation. `runIo` returning
-success does not mean the SQL operation is done. `reset` aborts pending state;
-`deinit` remains safe. A statement operation invalidates the current row even
+success does not mean the SQL operation is done. `reset` and `deinit` do not
+abort pending native work. In caller-driven mode, complete each pending
+`runIo`/same-operation retry sequence before `reset` or `deinit`; use
+`finalizeProgress` as the explicit quiescence route. Pending `reset` is rejected
+before native access, and pending `deinit` is programmer misuse that fails loud
+before native access. A statement operation invalidates the current row even
 when it is rejected or reports `.needs_io`.
 
 Caller-driven construction accepts only the source-proven default, `memory`,
@@ -248,9 +252,11 @@ ending execution. `Connection.close` is an optional early shutdown that prevents
 later operations; `Connection.deinit` also closes and always releases the handle.
 Call each owner's `deinit` exactly once in reverse acquisition order.
 
-Connections and statements are exclusive-use. The API adds no locking, hidden
-thread synchronization, blocking retry, or progress loop. Database sharing is limited to
-what the C API permits, and a database must outlive all of its connections.
+Connections and statements are exclusive-use. The API adds no locking or hidden
+thread synchronization. Caller-driven progress methods perform one native step
+and never loop; pinned library-driven operations and native reset/drop internals
+may loop while draining I/O. Database sharing is limited to what the C API
+permits, and a database must outlive all of its connections.
 
 `Statement.value` returns a `Value`. Text and blob variants are allocator-owned
 copies that remain valid across later statement operations; call `Value.deinit`

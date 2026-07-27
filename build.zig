@@ -54,6 +54,27 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run SDK tests");
     test_step.dependOn(&run_sdk_tests.step);
 
+    const internal_tests_module = b.createModule(.{
+        .root_source_file = b.path("src/internal_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    internal_tests_module.addIncludePath(b.path("vendor/turso-sdk-kit-0.7.1"));
+    internal_tests_module.link_libc = true;
+    internal_tests_module.addLibraryPath(turso_lib_dir);
+    internal_tests_module.linkSystemLibrary("turso_sdk_kit", .{
+        .use_pkg_config = .no,
+        .preferred_link_mode = switch (turso_linkage) {
+            .dynamic => .dynamic,
+            .static => .static,
+        },
+        .search_strategy = .no_fallback,
+    });
+    if (turso_linkage == .dynamic) internal_tests_module.addRPath(turso_lib_dir);
+    const internal_tests = b.addTest(.{ .root_module = internal_tests_module });
+    const run_internal_tests = b.addRunArtifact(internal_tests);
+    test_step.dependOn(&run_internal_tests.step);
+
     const io_progress_module = b.createModule(.{
         .root_source_file = b.path("tests/io_progress_test.zig"),
         .target = target,

@@ -12,7 +12,7 @@ The implemented synchronous SDK is split at ownership boundaries:
 - `collation.zig`: managed collation contexts and validated, call-scoped UTF-8 comparison inputs.
 - `database.zig`: copied configuration, create/open/connect/deinit, construction failures, and database diagnostics.
 - `connection.zig`: prepare, managed callback registration policy, busy timeout, transaction state, close/deinit, and connection diagnostics.
-- `statement.zig`: positional binding, execute/step/reset/finalize, copied values and metadata, and statement diagnostics.
+- `statement.zig`: positional binding, execute/step/reset/finalize, private caller-driven progress state, copied values and metadata, and statement diagnostics.
 
 `Database`, `Connection`, and `Statement` own opaque native handles. They are
 non-copyable by contract: an ordinary move transfers ownership, including when

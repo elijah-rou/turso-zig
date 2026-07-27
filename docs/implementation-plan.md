@@ -194,10 +194,19 @@ after `deinit`.
 ## 4. Keep I/O ownership explicit
 
 Keep `async_io = 0` for the default `.library_driven` mode. Caller-driven mode
-sets it to one and exposes each native statement operation as one call. After
-`TURSO_IO`, require one `turso_statement_run_io` call returning `TURSO_OK`, then
-a retry of the same operation. Do not map `TURSO_OK` to completion and do not
-hide progress in a blocking retry loop.
+sets it to one and exposes each native statement progress operation as one call.
+After `TURSO_IO`, require one `turso_statement_run_io` call returning `TURSO_OK`,
+then a retry of the same operation. Record native I/O, completion, finalization,
+and database-open states before fallible diagnostic handling. Do not map
+`TURSO_OK` to statement completion and do not hide retries in progress methods.
+Pinned library-driven operations and native reset/drop internals may drain I/O
+in loops.
+
+Caller-driven `reset` rejects an awaiting-I/O or retry-required operation before
+native access. `deinit` requires the statement to be quiescent and fails loud on
+pending programmer misuse before native access. Neither operation aborts pending
+native work. Complete the `runIo`/same-operation retry sequence, preferably
+through `finalizeProgress`, before cleanup.
 
 The 0.7.1 C ABI has no database I/O driver even though `turso_database_open`
 can return `TURSO_IO`. Restrict caller-driven configurations to default,

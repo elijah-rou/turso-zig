@@ -11,7 +11,11 @@ path, database/connection/statement cleanup, positional values (including
 NULL and empty text/blob), copied-value lifetime, metadata, reset and reuse,
 prepare tails, transaction state, diagnostics, constraint errors, file reopen
 persistence, and early row-loop cleanup under Zig's leak-detecting test
-allocator. Managed scalar coverage includes arity mismatch, fixed arity 127,
+allocator. Caller-driven coverage includes the public progress contract and an
+internal test root for pending/retry transitions, status-before-diagnostic
+ordering, repeated or failed `runIo`, reset/deinit quiescence, row invalidation,
+and terminal open/finalize state. Managed scalar coverage includes arity
+mismatch, fixed arity 127,
 variadic multi-argument calls, both determinism options, runtime scalar values,
 JSON argument subtype loss, JSON results, every result code, malformed defensive
 ABI input (including source-level JSON/error tags), OOM/oversize output,
