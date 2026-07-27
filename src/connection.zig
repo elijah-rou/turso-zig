@@ -310,6 +310,31 @@ pub const Connection = struct {
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
     }
 
+    /// Controls only SQL `load_extension()` for this connection. Direct
+    /// `loadExtension` calls intentionally bypass this gate.
+    pub fn setSqlExtensionLoadingEnabled(self: *Connection, enabled: bool) errors.Error!void {
+        const handle = try self.beginOperation();
+        try self.rejectActiveExtensionMutation();
+
+        var error_opt_out: [*c]const u8 = null;
+        const status = c.turso_connection_enable_load_extension(handle, enabled, &error_opt_out);
+        try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
+    }
+
+    /// Loads arbitrary native code into this process. A successful library is
+    /// retained by Turso for process lifetime and cannot be unloaded here.
+    pub fn loadExtension(self: *Connection, path: []const u8) errors.Error!void {
+        const handle = try self.beginOperation();
+        try self.rejectActiveExtensionMutation();
+        try self.validateExtensionPath(path);
+        const path_z = self.allocator.dupeZ(u8, path) catch return errors.Error.OutOfMemory;
+        defer self.allocator.free(path_z);
+
+        var error_opt_out: [*c]const u8 = null;
+        const status = c.turso_connection_load_extension(handle, path_z.ptr, &error_opt_out);
+        try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
+    }
+
     pub fn setBusyTimeoutMs(self: *Connection, timeout_ms: u64) errors.Error!void {
         const handle = try self.beginOperation();
         const signed_timeout = std.math.cast(i64, timeout_ms) orelse {
@@ -437,6 +462,21 @@ pub const Connection = struct {
             !std.unicode.utf8ValidateSlice(name))
         {
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "collation name must be 1..255 UTF-8 bytes without NUL");
+            return errors.Error.InvalidArgument;
+        }
+    }
+
+    fn rejectActiveExtensionMutation(self: *Connection) errors.Error!void {
+        if (self.owner_state.active_statements == 0) return;
+        try errors.setDiagnostic(self.allocator, &self.diagnostic, "extension controls cannot mutate the schema while statements are active");
+        return errors.Error.InvalidState;
+    }
+
+    fn validateExtensionPath(self: *Connection, path: []const u8) errors.Error!void {
+        if (path.len == 0 or path.len > 4095 or std.mem.indexOfScalar(u8, path, 0) != null or
+            !std.unicode.utf8ValidateSlice(path))
+        {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "extension path must be 1..4095 UTF-8 bytes without NUL");
             return errors.Error.InvalidArgument;
         }
     }

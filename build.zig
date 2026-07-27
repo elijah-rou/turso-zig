@@ -25,6 +25,11 @@ pub fn build(b: *std.Build) void {
         "turso-linkage",
         "Native Turso SDK Kit linkage: dynamic or static",
     ) orelse .dynamic;
+    const turso_extension_path = b.option(
+        []const u8,
+        "turso-extension-path",
+        "Absolute path to the pinned Linux limbo_regexp test fixture",
+    );
 
     const module = b.addModule("turso", .{
         .root_source_file = b.path("src/root.zig"),
@@ -68,6 +73,30 @@ pub fn build(b: *std.Build) void {
         });
         const run = b.addRunArtifact(executable);
         test_step.dependOn(&run.step);
+    }
+
+    if (turso_extension_path) |extension_path| {
+        if (target.result.os.tag != .linux or turso_linkage != .dynamic) {
+            std.process.fatal("-Dturso-extension-path requires a Linux dynamic build", .{});
+        }
+        if (!std.fs.path.isAbsolute(extension_path)) {
+            std.process.fatal("-Dturso-extension-path must be absolute", .{});
+        }
+        const extension_options = b.addOptions();
+        extension_options.addOption([]const u8, "path", extension_path);
+        const extension_module = b.createModule(.{
+            .root_source_file = b.path("tests/extension_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        extension_module.addImport("turso", module);
+        extension_module.addOptions("extension_fixture", extension_options);
+        const extension_executable = b.addExecutable(.{
+            .name = "turso-extension-test",
+            .root_module = extension_module,
+        });
+        const run_extension = b.addRunArtifact(extension_executable);
+        test_step.dependOn(&run_extension.step);
     }
 
     const example_module = b.createModule(.{

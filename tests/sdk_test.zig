@@ -389,6 +389,88 @@ test "file persistence and early row-loop cleanup" {
     }
 }
 
+test "extension control public signatures distinguish the SQL gate from direct loading" {
+    const set_gate: *const fn (*turso.Connection, bool) turso.Error!void = turso.Connection.setSqlExtensionLoadingEnabled;
+    const direct_load: *const fn (*turso.Connection, []const u8) turso.Error!void = turso.Connection.loadExtension;
+    _ = set_gate;
+    _ = direct_load;
+}
+
+fn expectSqlExtensionFailure(connection: *turso.Connection, expected: []const u8) !void {
+    var statement = try connection.prepareSingle("SELECT load_extension('definitely_missing_extension')");
+    defer statement.deinit();
+    try std.testing.expectError(turso.Error.SqlError, statement.step());
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        statement.latestDiagnostic() orelse return error.MissingExtensionDiagnostic,
+        expected,
+    ) != null);
+}
+
+test "SQL extension loading is disabled by default and enabled per connection" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var enabled = try database.connect();
+    defer enabled.deinit();
+    var disabled = try database.connect();
+    defer disabled.deinit();
+
+    try expectSqlExtensionFailure(&enabled, "runtime extension loading is disabled");
+    try enabled.setSqlExtensionLoadingEnabled(true);
+    try expectSqlExtensionFailure(&enabled, "Extension file not found");
+    try expectSqlExtensionFailure(&disabled, "runtime extension loading is disabled");
+    try enabled.setSqlExtensionLoadingEnabled(false);
+    try expectSqlExtensionFailure(&enabled, "runtime extension loading is disabled");
+}
+
+test "direct extension loading bypasses the SQL gate and replaces diagnostics" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+
+    try std.testing.expectError(turso.Error.SqlError, connection.loadExtension("definitely_missing_extension"));
+    const missing = connection.latestDiagnostic() orelse return error.MissingDirectExtensionDiagnostic;
+    try std.testing.expect(std.mem.indexOf(u8, missing, "Extension file not found") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "runtime extension loading is disabled") == null);
+    try connection.setSqlExtensionLoadingEnabled(false);
+    try std.testing.expect(connection.latestDiagnostic() == null);
+}
+
+test "extension controls validate paths state and active statements before native mutation" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.loadExtension("bad\x00path"));
+    try std.testing.expectEqualStrings(
+        "extension path must be 1..4095 UTF-8 bytes without NUL",
+        connection.latestDiagnostic() orelse return error.MissingNulExtensionDiagnostic,
+    );
+    const oversized = try std.testing.allocator.alloc(u8, 4096);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, 'x');
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.loadExtension(oversized));
+
+    var statement = try connection.prepareSingle("SELECT 1");
+    try std.testing.expectError(turso.Error.InvalidState, connection.setSqlExtensionLoadingEnabled(true));
+    try std.testing.expectEqualStrings(
+        "extension controls cannot mutate the schema while statements are active",
+        connection.latestDiagnostic() orelse return error.MissingActiveExtensionDiagnostic,
+    );
+    try std.testing.expectError(turso.Error.InvalidState, connection.loadExtension("definitely_missing_extension"));
+    statement.deinit();
+
+    try connection.close();
+    try std.testing.expectError(turso.Error.InvalidState, connection.setSqlExtensionLoadingEnabled(true));
+    try std.testing.expectEqualStrings("connection is closed", connection.latestDiagnostic().?);
+    try std.testing.expectError(turso.Error.InvalidState, connection.loadExtension("definitely_missing_extension"));
+}
+
 test "managed scalar callbacks cover arity options and every SQL value kind" {
     var database = try openDatabase(":memory:");
     defer database.deinit();
@@ -585,6 +667,15 @@ fn reentryScalar(context: *ReentryContext, _: turso.CallbackArgs) turso.Callback
             std.mem.eql(u8, context.connection.latestDiagnostic() orelse "", "managed callback re-entry is not allowed");
     };
     context.connection.setBusyTimeoutMs(0) catch {};
+    const gate_rejected = rejected: {
+        context.connection.setSqlExtensionLoadingEnabled(true) catch |err| break :rejected err == turso.Error.InvalidState;
+        break :rejected false;
+    };
+    const direct_load_rejected = rejected: {
+        context.connection.loadExtension("definitely_missing_extension") catch |err| break :rejected err == turso.Error.InvalidState;
+        break :rejected false;
+    };
+    context.callback_rejected.* = context.callback_rejected.* and gate_rejected and direct_load_rejected;
     _ = context.connection.autocommit();
     _ = context.connection.lastInsertRowid();
     context.connection.close() catch {};
@@ -599,10 +690,19 @@ fn reentryScalar(context: *ReentryContext, _: turso.CallbackArgs) turso.Callback
 }
 
 fn reentryDeinit(context: *ReentryContext) void {
-    _ = context.connection.prepareSingle("SELECT 1") catch |err| {
-        context.deinit_rejected.* = err == turso.Error.InvalidState;
-        return;
+    const prepare_rejected = rejected: {
+        _ = context.connection.prepareSingle("SELECT 1") catch |err| break :rejected err == turso.Error.InvalidState;
+        break :rejected false;
     };
+    const gate_rejected = rejected: {
+        context.connection.setSqlExtensionLoadingEnabled(true) catch |err| break :rejected err == turso.Error.InvalidState;
+        break :rejected false;
+    };
+    const direct_load_rejected = rejected: {
+        context.connection.loadExtension("definitely_missing_extension") catch |err| break :rejected err == turso.Error.InvalidState;
+        break :rejected false;
+    };
+    context.deinit_rejected.* = prepare_rejected and gate_rejected and direct_load_rejected;
 }
 
 test "scalar callback and deinitializer reject all owner reentry without native access" {

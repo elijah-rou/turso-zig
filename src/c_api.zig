@@ -89,6 +89,22 @@ comptime {
         @compileError("Turso SDK Kit 0.7.1 callback signature mismatch");
     }
 
+    const extension_gate_signature = @typeInfo(@TypeOf(raw.turso_connection_enable_load_extension)).@"fn";
+    const extension_load_signature = @typeInfo(@TypeOf(raw.turso_connection_load_extension)).@"fn";
+    if (extension_gate_signature.params.len != 3 or
+        @sizeOf(extension_gate_signature.params[0].type.?) != @sizeOf(?*const anyopaque) or
+        extension_gate_signature.params[1].type.? != bool or
+        @sizeOf(extension_gate_signature.params[2].type.?) != @sizeOf(?*anyopaque) or
+        extension_gate_signature.return_type.? != raw.turso_status_code_t or
+        extension_load_signature.params.len != 3 or
+        @sizeOf(extension_load_signature.params[0].type.?) != @sizeOf(?*const anyopaque) or
+        @sizeOf(extension_load_signature.params[1].type.?) != @sizeOf(?*const anyopaque) or
+        @sizeOf(extension_load_signature.params[2].type.?) != @sizeOf(?*anyopaque) or
+        extension_load_signature.return_type.? != raw.turso_status_code_t)
+    {
+        @compileError("Turso SDK Kit 0.7.1 extension-control signature mismatch");
+    }
+
     const collation_pointer = @typeInfo(raw.turso_collation_function_t).optional.child;
     const collation_signature = @typeInfo(@typeInfo(collation_pointer).pointer.child).@"fn";
     if (collation_signature.params.len != 5 or
