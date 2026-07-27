@@ -22,11 +22,15 @@ zig build run-example \
 `-Dturso-lib-dir` is required. `-Dturso-linkage` accepts `dynamic` or `static`
 and defaults to `dynamic`. The build restricts lookup to the supplied library
 directory, adds its runtime search path for dynamic builds, does not use
-`pkg-config`, and never invokes Cargo.
+`pkg-config`, and never invokes Cargo. The optional
+`-Dturso-extension-path=<absolute path>` enables only the isolated extension
+integration executable. It is not imported by the consumer module, and omitting
+it leaves ordinary tests available without an extension fixture.
 
 Package discovery (`zig build --help`) and the artifact-free default step do
 not require the option; every compile or run step fails unless the native-library
 directory is supplied.
+
 
 Dynamic Ubuntu x86_64 with glibc is the only runtime-qualified distribution
 path today. Static selection requests `libturso_sdk_kit.a`, but static support
@@ -42,10 +46,14 @@ release requirements.
 
 Ubuntu CI shallow-clones Turso tag `v0.7.1`, verifies that the checkout is
 exactly that tag and expected commit, byte-compares its `sdk-kit/turso.h` with
-the vendored header, and builds only the `turso_sdk_kit` package with Cargo
-under a bounded timeout. Cargo is maintainer-side CI setup, not consumer
+the vendored header, and builds the `turso_sdk_kit` package with Cargo under a
+bounded timeout. CI also builds the workspace's exact `limbo_regexp` package
+with `--locked --profile release-official`, verifies the resulting Linux shared
+library exports `register_extension`, and passes its absolute path to the
+extension parity test. Cargo is maintainer-side CI setup, not consumer
 `build.zig` behavior. CI then sets the loader path and runs formatting, the
-full tests, the basic example, and an exact base-to-head `git diff --check` against that artifact.
+full tests, the basic example, and an exact base-to-head `git diff --check`
+against those artifacts.
 
 ## Future published artifacts
 

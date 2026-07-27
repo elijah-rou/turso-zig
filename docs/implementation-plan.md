@@ -58,7 +58,8 @@ invocation-borrowed, and malformed or same-thread reentrant records are
 dropped. Database configuration covers the local path and
 the optional 0.7.1 experimental-feature, VFS, and encryption strings while
 forcing `async_io = 0`. Connection methods expose prepare-first/single, busy timeout, autocommit, last
-insert rowid, managed collation registration/unregistration, close, and deinit.
+insert rowid, managed collation registration/unregistration, per-connection SQL
+extension gating, direct trusted extension loading, close, and deinit.
 Statement methods
 cover positional binds, execute/step, parameter and column metadata, copied row
 values, changes, reset, finalize, and deinit.
@@ -102,8 +103,16 @@ retaining a retired context. The verified SQL scope is expression comparison
 and explicit sorting. Schema declarations, indexes, uniqueness constraints,
 and persisted schemas that name managed collations remain explicitly unclaimed.
 
-Defer cloud sync, loadable extensions, and async I/O. Each deferred area
-requires a separate ownership, scheduler, or trust-boundary design.
+Extension loading is disabled through SQL by default and enabled per
+connection. The direct native loader bypasses that SQL gate. Both controls
+reject managed-callback reentry and active-statement mutation. Paths are bounded
+to 4095 UTF-8 bytes without NUL. Loading executes arbitrary native code; Turso
+retains successful libraries for process lifetime and this binding exposes no
+unload. Runtime qualification is limited to Linux dynamic linking with the
+pinned v0.7.1 regexp fixture.
+
+Defer cloud sync and async I/O. Each deferred area requires a separate
+ownership or scheduler design.
 
 ## 2. Treat `turso.h` as the ABI source of truth
 
@@ -116,6 +125,7 @@ beside any FFI work. The relevant groups are:
 | Process configuration | `turso_setup`, `turso_version` |
 | Database lifecycle | `turso_database_new`, `turso_database_open`, `turso_database_connect`, `turso_database_deinit` |
 | Connection lifecycle | `turso_connection_prepare_first`, `turso_connection_prepare_single`, `turso_connection_close`, `turso_connection_deinit` |
+| Extension controls | `turso_connection_enable_load_extension`, `turso_connection_load_extension` |
 | Execution | `turso_statement_execute`, `turso_statement_step`, `turso_statement_reset`, `turso_statement_finalize`, `turso_statement_run_io` |
 | Binding | `turso_statement_bind_positional_*`, `turso_statement_named_position` |
 | Results | `turso_statement_row_value_*`, `turso_statement_column_*` |
@@ -184,6 +194,7 @@ Run the full supported workflow with Zig 0.16.0 and a matching v0.7.1 library:
 
 ```bash
 zig build test -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release -Dturso-linkage=dynamic
+zig build test -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release -Dturso-linkage=dynamic -Dturso-extension-path=/absolute/path/to/liblimbo_regexp.so
 zig build run-example -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release -Dturso-linkage=dynamic
 zig fmt --check build.zig src tests examples
 git diff --check
@@ -200,7 +211,5 @@ binding's public ownership, conversion, and error contract.
 - **Callbacks:** extend only after defining ownership and mutation safety for
   each additional callback family; managed scalar, aggregate, and collation
   contracts do not imply support for other callback ABIs.
-- **Extensions:** default disabled; enabling loading changes the application's
-  trust boundary.
 - **Async I/O:** expose progress without blocking an event loop and define
   cancellation plus cleanup behavior.

@@ -4,13 +4,15 @@ An early synchronous Zig 0.16.0 SDK for Turso embedded/local databases. The
 implemented API exposes the runtime version and process-global tracing setup,
 opens local databases, prepares statements, binds positional values, executes
 SQL, streams rows, copies typed values, exposes metadata and transaction state,
-registers managed scalar and aggregate functions and collations, and retains
-native diagnostics.
+registers managed scalar and aggregate functions and collations, controls SQL
+extension loading, directly loads trusted native extensions, and retains native
+diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
-macOS, Windows, cloud sync, loadable extensions, and async I/O are not yet
-supported. Process-global tracing callbacks and managed scalar, aggregate, and
-collation SQL callbacks are supported as described below.
+Loadable extensions are qualified only on that Linux dynamic path. macOS,
+Windows, cloud sync, and async I/O are not yet supported. Process-global
+tracing callbacks and managed scalar, aggregate, and collation SQL callbacks
+are supported as described below.
 
 ## Native library requirement
 
@@ -24,6 +26,11 @@ Every compile or run command requires an absolute library directory:
 zig build test \
   -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
   -Dturso-linkage=dynamic
+# Optional maintainer parity fixture, used only by the extension test executable:
+zig build test \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
+  -Dturso-linkage=dynamic \
+  -Dturso-extension-path=/absolute/path/to/liblimbo_regexp.so
 zig build run-example \
   -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
   -Dturso-linkage=dynamic
@@ -37,6 +44,28 @@ library closure is not enumerated or supported yet. `build.zig` never invokes
 Cargo, falls back to `pkg-config`, or searches for an arbitrary system Turso
 library. Tests and the example reject a runtime version outside the 0.7.1 ABI
 version family (`0.7.1`, `0.7.1-*`, or `0.7.1+*`).
+
+## Native extension controls
+
+`Connection.setSqlExtensionLoadingEnabled` controls the SQL
+`load_extension()` function per connection. It is disabled by default, enabling
+one connection does not affect another, and disabling it restores rejection.
+`Connection.loadExtension` calls Turso's native loader directly and deliberately
+bypasses the SQL gate. Neither API searches for libraries, invokes Cargo, or
+provides unload behavior.
+
+Loading an extension executes arbitrary native code with the process's full
+privileges. Pass only an explicit, trusted path. The wrapper rejects empty,
+non-UTF-8, embedded-NUL, and paths longer than 4095 bytes. Both controls reject
+callback/deinitializer reentry and reject mutation while any statement exists
+on that connection. Turso retains successfully loaded libraries for process
+lifetime, so closing a connection does not unload them.
+
+Positive integration is qualified only for Linux dynamic linking with the exact
+Turso v0.7.1 `limbo_regexp` cdylib. Consumer builds never run Cargo. Ordinary
+`zig build test` remains available without the optional fixture path; CI always
+builds the pinned fixture and supplies its absolute path to the isolated
+extension test executable.
 
 ## Setup and logging
 
