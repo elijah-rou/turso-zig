@@ -1311,3 +1311,162 @@ test "managed aggregate validates names and arities before taking ownership" {
     try std.testing.expectError(turso.Error.InvalidArgument, connection.registerAggregateFunction("too_many", .{ .fixed = 128 }, function));
     try std.testing.expectEqual(@as(usize, 0), context_deinits);
 }
+
+const CollationContext = struct {
+    comparisons: usize = 0,
+    deinits: *usize,
+    reverse: bool = false,
+};
+
+fn compareCollation(context: *CollationContext, left: []const u8, right: []const u8) std.math.Order {
+    context.comparisons += 1;
+    const order = std.mem.order(u8, left, right);
+    return if (context.reverse) order.invert() else order;
+}
+
+fn deinitCollation(context: *CollationContext) void {
+    context.deinits.* += 1;
+}
+
+fn managedCollation(deinits: *usize, reverse: bool) turso.Collation(CollationContext) {
+    return .{
+        .context = .{ .deinits = deinits, .reverse = reverse },
+        .compare = compareCollation,
+        .deinit = deinitCollation,
+    };
+}
+
+fn expectText(connection: *turso.Connection, sql: []const u8, expected: []const u8) !void {
+    var value = try queryValue(connection, sql);
+    defer value.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(expected, value.text);
+}
+
+test "managed collations order and equate ASCII UTF-8 and empty text per connection" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var first = try database.connect();
+    defer first.deinit();
+    var second = try database.connect();
+    defer second.deinit();
+    var deinits: usize = 0;
+
+    try first.registerCollation("zig_bytes", managedCollation(&deinits, false));
+    try expectText(&first, "SELECT v FROM (SELECT '' v UNION ALL SELECT 'z' UNION ALL SELECT 'é' UNION ALL SELECT 'a') ORDER BY v COLLATE zig_bytes LIMIT 1", "");
+    try expectText(&first, "SELECT v FROM (SELECT 'é' v UNION ALL SELECT 'z') ORDER BY v COLLATE zig_bytes LIMIT 1", "z");
+    var equality = try queryValue(&first, "SELECT 'same' = 'same' COLLATE zig_bytes");
+    defer equality.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 1), equality.integer);
+    try std.testing.expectError(turso.Error.SqlError, second.prepareSingle("SELECT 'a' COLLATE zig_bytes"));
+}
+
+test "managed collation replacement unregister absence and teardown destroy exactly once" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var deinits: usize = 0;
+    {
+        var connection = try database.connect();
+        defer connection.deinit();
+        try connection.registerCollation("zig_life", managedCollation(&deinits, false));
+        try connection.registerCollation("zig_life", managedCollation(&deinits, true));
+        try std.testing.expectEqual(@as(usize, 1), deinits);
+        try expectText(&connection, "SELECT v FROM (SELECT 'a' v UNION ALL SELECT 'z') ORDER BY v COLLATE zig_life LIMIT 1", "z");
+        try connection.unregisterCollation("zig_life");
+        try std.testing.expectEqual(@as(usize, 2), deinits);
+        try connection.unregisterCollation("zig_life");
+        try std.testing.expectEqual(@as(usize, 2), deinits);
+        try connection.registerCollation("zig_teardown", managedCollation(&deinits, false));
+    }
+    try std.testing.expectEqual(@as(usize, 3), deinits);
+}
+
+test "managed collation validates names and preserves caller ownership on allocation failure" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var deinits: usize = 0;
+    var collation = managedCollation(&deinits, false);
+
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerCollation("", collation));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerCollation("bad\x00name", collation));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerCollation("bad\xff", collation));
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    connection.allocator = failing.allocator();
+    try std.testing.expectError(turso.Error.OutOfMemory, connection.registerCollation("zig_oom", collation));
+    connection.allocator = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 0), deinits);
+    deinitCollation(&collation.context);
+    try std.testing.expectEqual(@as(usize, 1), deinits);
+}
+
+const CollationReentryContext = struct {
+    connection: *turso.Connection,
+    statement: *?*turso.Statement,
+    compare_rejected: *bool,
+    deinit_rejected: *bool,
+};
+
+fn compareWithReentry(context: *CollationReentryContext, left: []const u8, right: []const u8) std.math.Order {
+    _ = context.connection.prepareSingle("SELECT 1") catch |err| {
+        context.compare_rejected.* = err == turso.Error.InvalidState;
+    };
+    if (context.statement.*) |statement| statement.reset() catch {};
+    return std.mem.order(u8, left, right);
+}
+
+fn deinitWithReentry(context: *CollationReentryContext) void {
+    _ = context.connection.prepareSingle("SELECT 1") catch |err| {
+        context.deinit_rejected.* = err == turso.Error.InvalidState;
+    };
+}
+
+test "collation comparator and destructor reject owner reentry" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var active_statement: ?*turso.Statement = null;
+    var compare_rejected = false;
+    var deinit_rejected = false;
+    try connection.registerCollation("zig_reentry", turso.Collation(CollationReentryContext){
+        .context = .{
+            .connection = &connection,
+            .statement = &active_statement,
+            .compare_rejected = &compare_rejected,
+            .deinit_rejected = &deinit_rejected,
+        },
+        .compare = compareWithReentry,
+        .deinit = deinitWithReentry,
+    });
+    var statement = try connection.prepareSingle("SELECT v FROM (SELECT 'b' v UNION ALL SELECT 'a') ORDER BY v COLLATE zig_reentry");
+    active_statement = &statement;
+    try std.testing.expectEqual(turso.Step.row, try statement.step());
+    try std.testing.expect(compare_rejected);
+    statement.deinit();
+    active_statement = null;
+    try connection.unregisterCollation("zig_reentry");
+    try std.testing.expect(deinit_rejected);
+}
+
+test "collation table mutations wait for prepared and partially executed statements" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var deinits: usize = 0;
+    try connection.registerCollation("zig_stable", managedCollation(&deinits, false));
+    var statement = try connection.prepareSingle("SELECT v FROM (SELECT 'b' v UNION ALL SELECT 'a') ORDER BY v COLLATE zig_stable");
+    try std.testing.expectError(turso.Error.InvalidState, connection.registerCollation("zig_stable", managedCollation(&deinits, true)));
+    try std.testing.expectError(turso.Error.InvalidState, connection.unregisterCollation("zig_stable"));
+    try std.testing.expectEqual(turso.Step.row, try statement.step());
+    try std.testing.expectError(turso.Error.InvalidState, connection.unregisterCollation("zig_stable"));
+    statement.deinit();
+    try connection.unregisterCollation("zig_stable");
+    try std.testing.expectEqual(@as(usize, 1), deinits);
+}
