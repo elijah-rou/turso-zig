@@ -16,8 +16,14 @@ variadic multi-argument calls, both determinism options, runtime scalar values,
 JSON argument subtype loss, JSON results, every result code, malformed defensive
 ABI input (including source-level JSON/error tags), OOM/oversize output,
 replacement/unregister/prepared-program/connection context lifetime, reentry
-through connection and statement operations, and name/arity validation. Turso
-0.7.1 cannot supply managed ERROR callback arguments at SQL runtime.
+through connection and statement operations, and name/arity validation.
+Managed aggregate coverage adds group-state retirement and exact state/context
+cleanup. Managed collation coverage includes ASCII, non-ASCII UTF-8, empty
+text, equality and ordering, per-connection scope, name validation,
+replacement/unregister/teardown ownership, allocation failure, prepared and
+partially executed statement mutation gates, malformed ABI inputs, and
+comparator/deinitializer reentry. Turso 0.7.1 cannot supply managed ERROR
+callback arguments at SQL runtime.
 
 Run the complete suite with Zig 0.16.0 and a native library built from Turso
 tag `v0.7.1`:

@@ -1410,18 +1410,30 @@ const CollationReentryContext = struct {
     deinit_rejected: *bool,
 };
 
-fn compareWithReentry(context: *CollationReentryContext, left: []const u8, right: []const u8) std.math.Order {
+fn attemptCollationReentry(context: *CollationReentryContext, rejected: *bool) void {
     _ = context.connection.prepareSingle("SELECT 1") catch |err| {
-        context.compare_rejected.* = err == turso.Error.InvalidState;
+        rejected.* = err == turso.Error.InvalidState;
     };
-    if (context.statement.*) |statement| statement.reset() catch {};
+    context.connection.setBusyTimeoutMs(0) catch {};
+    _ = context.connection.autocommit();
+    _ = context.connection.lastInsertRowid();
+    context.connection.close() catch {};
+    context.connection.deinit();
+    if (context.statement.*) |statement| {
+        statement.reset() catch {};
+        _ = statement.parameterCount() catch {};
+        _ = statement.changes();
+        statement.deinit();
+    }
+}
+
+fn compareWithReentry(context: *CollationReentryContext, left: []const u8, right: []const u8) std.math.Order {
+    attemptCollationReentry(context, context.compare_rejected);
     return std.mem.order(u8, left, right);
 }
 
 fn deinitWithReentry(context: *CollationReentryContext) void {
-    _ = context.connection.prepareSingle("SELECT 1") catch |err| {
-        context.deinit_rejected.* = err == turso.Error.InvalidState;
-    };
+    attemptCollationReentry(context, context.deinit_rejected);
 }
 
 test "collation comparator and destructor reject owner reentry" {

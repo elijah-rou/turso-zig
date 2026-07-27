@@ -22,6 +22,7 @@ pub const CallbackResult = @import("callback_value.zig").CallbackResult;
 pub const Arity = @import("callback_value.zig").Arity;
 pub const ScalarFunction = @import("callback_value.zig").ScalarFunction;
 pub const AggregateFunction = @import("callback_value.zig").AggregateFunction;
+pub const Collation = @import("collation.zig").Collation;
 pub const Database = @import("database.zig").Database;
 pub const Connection = @import("connection.zig").Connection;
 pub const PrepareFirstResult = @import("connection.zig").PrepareFirstResult;

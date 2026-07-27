@@ -89,6 +89,19 @@ comptime {
         @compileError("Turso SDK Kit 0.7.1 callback signature mismatch");
     }
 
+    const collation_pointer = @typeInfo(raw.turso_collation_function_t).optional.child;
+    const collation_signature = @typeInfo(@typeInfo(collation_pointer).pointer.child).@"fn";
+    if (collation_signature.params.len != 5 or
+        @sizeOf(collation_signature.params[0].type.?) != @sizeOf(usize) or
+        @sizeOf(collation_signature.params[1].type.?) != @sizeOf([*c]const u8) or
+        @sizeOf(collation_signature.params[2].type.?) != @sizeOf(usize) or
+        @sizeOf(collation_signature.params[3].type.?) != @sizeOf([*c]const u8) or
+        @sizeOf(collation_signature.params[4].type.?) != @sizeOf(usize) or
+        @sizeOf(collation_signature.return_type.?) != @sizeOf(c_int))
+    {
+        @compileError("Turso SDK Kit 0.7.1 collation callback signature mismatch");
+    }
+
     const aggregate_init_pointer = @typeInfo(raw.turso_aggregate_init_function_t).optional.child;
     const aggregate_step_pointer = @typeInfo(raw.turso_aggregate_step_function_t).optional.child;
     const aggregate_final_pointer = @typeInfo(raw.turso_aggregate_final_function_t).optional.child;
