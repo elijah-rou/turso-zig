@@ -37,6 +37,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     module.addIncludePath(b.path("vendor/turso-sdk-kit-0.7.1"));
+    module.addAnonymousImport("abi-parity-doc", .{
+        .root_source_file = b.path("docs/abi-parity.md"),
+    });
     module.link_libc = true;
     module.addObjectFile(tursoLibraryPath(b, target.result, turso_lib_dir, turso_linkage));
     if (turso_linkage == .dynamic) module.addRPath(turso_lib_dir);
@@ -85,6 +88,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     internal_tests_module.addIncludePath(b.path("vendor/turso-sdk-kit-0.7.1"));
+    internal_tests_module.addAnonymousImport("abi-parity-doc", .{
+        .root_source_file = b.path("docs/abi-parity.md"),
+    });
     internal_tests_module.link_libc = true;
     internal_tests_module.addObjectFile(tursoLibraryPath(b, target.result, turso_lib_dir, turso_linkage));
     if (turso_linkage == .dynamic) internal_tests_module.addRPath(turso_lib_dir);
