@@ -2,7 +2,7 @@
 
 This directory contains design, parity, and release guidance. The implementation lives in `src/`.
 
-- [`abi-parity.md`](abi-parity.md): structurally validated classification of all 48 public functions and 27 public typedefs.
+- [`abi-parity.md`](abi-parity.md): cell-for-cell generated/validated classification of all 48 public functions and 27 public typedefs.
 - [`implementation-plan.md`](implementation-plan.md): ordered implementation
   plan, API boundary, C-ABI ownership rules, and tests.
 - [`distribution.md`](distribution.md): options for making the Turso native

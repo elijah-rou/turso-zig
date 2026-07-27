@@ -55,14 +55,9 @@ bounded timeout. CI also builds the workspace's exact `limbo_regexp` package
 with `--locked --profile release-official`, verifies the resulting Linux shared
 library exports `register_extension`, and passes its absolute path to the
 extension parity test. Cargo is maintainer-side CI setup, not consumer
-<<<<<<< HEAD
-`build.zig` behavior. CI then sets the loader path and runs formatting, the
-full tests, the basic example, and an exact base-to-head `git diff --check`
-against those artifacts.
-=======
-`build.zig` behavior. CI then sets the loader path and runs the ABI parity gate before runtime tests, followed by formatting, the
-full tests, the basic example, and `git diff --check` against those artifacts.
->>>>>>> 9a6033d (docs: publish complete 0.7.1 adapter parity)
+`build.zig` behavior. CI then sets the loader path and runs formatting, the ABI
+parity gate, the full tests, both examples through `zig build run-example`, and
+an exact base-to-head `git diff --check` against those artifacts.
 
 ## Future published artifacts
 

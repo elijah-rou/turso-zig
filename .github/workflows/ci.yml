@@ -89,7 +89,7 @@ jobs:
           -Dturso-linkage=dynamic
           -Dturso-extension-path="$TURSO_EXTENSION_PATH"
 
-      - name: Run basic example
+      - name: Run both examples
         run: >-
           zig build run-example
           -Dturso-lib-dir="$TURSO_LIB_DIR"

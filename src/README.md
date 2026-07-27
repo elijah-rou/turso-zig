@@ -3,15 +3,18 @@
 The implemented synchronous SDK is split at ownership boundaries:
 
 - `root.zig`: public exports, pinned ABI version, and runtime compatibility check.
-- `c_api.zig`: the sole `@cImport` of vendored `turso.h` plus compile-time tag checks; exported as the unstable `turso.c` namespace.
+- `abi_parity.zig`: closed raw-declaration manifest, exact Zig API/adapter references, and parity-document validation.
+- `c_api.zig`: the sole `@cImport` of vendored `turso.h` plus exhaustive tags, callback signatures, and target-qualified layouts; exported as the unstable and unsafe `turso.c` namespace.
 - `error.zig`: exhaustive status mapping and copy/free handling for Turso diagnostics.
+- `io_progress.zig`: explicit I/O mode and open/execute/step/finalize progress unions.
+- `ownership.zig`: bounded parent/child, callback-reentry, statement-progress, and aggregate-registration state.
 - `setup.zig`: safe version access, owned setup failures, and the synchronized process-global logger trampoline.
 - `value.zig`: `Value`, whose text/blob variants own allocator-copied bytes.
-- `callback_value.zig`: exhaustive borrowed callback values and bounded, owned result encoding.
-- `aggregate_function.zig`: bounded per-group state and managed aggregate callback trampolines.
-- `collation.zig`: managed collation contexts and validated, call-scoped UTF-8 comparison inputs.
+- `callback_value.zig`: exhaustive borrowed callback decoding and bounded, owned result encoding/destruction.
+- `aggregate_function.zig`: bounded per-group state and exact managed aggregate callback/ownership trampolines.
+- `collation.zig`: managed collation contexts and exact validated, call-scoped UTF-8 comparison trampolines.
 - `database.zig`: copied configuration, create/open/connect/deinit, construction failures, and database diagnostics.
-- `connection.zig`: prepare, managed callback registration policy, busy timeout, transaction state, close/deinit, and connection diagnostics.
+- `connection.zig`: prepare, managed scalar/aggregate/collation registration and trampolines, extension controls, busy timeout, transaction state, close/deinit, and diagnostics.
 - `statement.zig`: positional binding, execute/step/reset/finalize, private caller-driven progress state, copied values and metadata, and statement diagnostics.
 
 `Database`, `Connection`, and `Statement` own opaque native handles. They are

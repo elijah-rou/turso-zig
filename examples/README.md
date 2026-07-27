@@ -1,18 +1,12 @@
 # Examples
 
-`basic.zig` is the runnable synchronous SDK example. `parity.zig` adds concise managed scalar, aggregate, and collation registrations plus the caller-driven `openProgress`/`stepProgress`/`runIo`/`finalizeProgress` loop. Neither example loads native extension code. It initializes a
-leak-checking allocator, rejects a loaded runtime outside the 0.7.1-compatible
-version family, opens `:memory:`, creates a table, inserts positional text and
-integer values, streams rows, inspects and frees copied `Value`s, and prints an
-owner's retained SQL diagnostic when a native operation fails.
+`basic.zig` initializes a leak-checking allocator, rejects a loaded runtime outside the 0.7.1-compatible version family, opens `:memory:`, creates a table, inserts positional text and integer values, streams rows, frees copied `Value`s, prints retained SQL diagnostics, and explicitly closes the connection.
+
+`parity.zig` separately demonstrates managed scalar, aggregate, and collation registrations plus caller-driven `openProgress`/`stepProgress`/`runIo`/`finalizeProgress`. It uses deferred owner teardown rather than an explicit close and propagates errors without diagnostic printing. Neither example loads native extension code.
 
 `zig build run-example` runs both programs. Managed callbacks and deinitializers must never panic because a panic cannot unwind across the C ABI boundary; return a managed error for expected callback failures. The examples demonstrate the safe adapters without crossing the arbitrary-native-code extension trust boundary.
 
-Each example finalizes and deinitializes statements, then closes and
-deinitializes the connection, then deinitializes the database. This
-reverse-acquisition order is required because each native owner must outlive
-its children. Owners are non-copyable by contract and connections/statements
-are synchronous, exclusive-use values.
+Each example finalizes and deinitializes statements before deinitializing the connection and database; `basic.zig` also calls `Connection.close`. This reverse-acquisition order is required because each native owner must outlive its children. Owners are non-copyable by contract and connections/statements are synchronous, exclusive-use values.
 
 Run with Zig 0.16.0 and a matching Turso tag `v0.7.1` dynamic library:
 

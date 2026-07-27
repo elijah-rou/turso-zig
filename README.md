@@ -7,7 +7,7 @@ opens local databases, prepares statements, binds positional values, executes
 SQL, streams rows, copies typed values, exposes metadata and transaction state,
 registers managed scalar and aggregate functions and collations, controls SQL
 extension loading, exposes an explicitly unsafe native-extension trust boundary,
-and retains native diagnostics. The safe adapter has complete declaration parity with the vendored SDK Kit 0.7.1 ABI: all 48 public C functions and 27 public typedefs are machine-classified, compile-referenced, and documented with no silently raw-only callable functionality.
+and retains native diagnostics. The safe adapter has complete declaration parity with the vendored SDK Kit 0.7.1 ABI: all 48 public C functions and 27 public typedefs are machine-classified, compile-referenced, and documented with no silently raw-only callable functionality. The separate `turso.c` namespace remains unstable and unsafe; parity classification does not make direct raw calls memory-safe.
 
 See [`docs/abi-parity.md`](docs/abi-parity.md) for the generated/validated manifest. The principal adapters are managed scalar/aggregate/collation callbacks, prepare-first-backed `prepareSingle`, copied values/metadata/diagnostics, explicit statement progress including `runIo`, and the `loadExtensionUnsafe` trust boundary. The two public limitations are the missing database-open I/O driver tracked by [tursodatabase/turso#8043](https://github.com/tursodatabase/turso/issues/8043) and the impossibility of making arbitrary loaded native extension code memory-safe.
 
@@ -48,7 +48,7 @@ git diff --check
 Ubuntu. Static selection is implemented, but its Rust and platform system
 library closure is not enumerated or supported yet. `build.zig` never invokes
 Cargo, falls back to `pkg-config`, or searches for an arbitrary system Turso
-library. Tests and the example reject a runtime version outside the 0.7.1 ABI
+library. Tests and the basic example reject a runtime version outside the 0.7.1 ABI
 version family (`0.7.1`, `0.7.1-*`, or `0.7.1+*`).
 
 ## Native extension controls

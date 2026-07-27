@@ -2,7 +2,8 @@ const std = @import("std");
 
 /// Machine-checked classification of every public Turso SDK Kit 0.7.1 ABI declaration.
 pub const abi_parity = @import("abi_parity.zig");
-/// Raw Turso SDK Kit 0.7.1 C bindings. This namespace is unstable and has no silently raw-only callable functionality.
+/// Raw Turso SDK Kit 0.7.1 C bindings. This namespace is unstable and unsafe;
+/// parity classification does not make direct raw calls memory-safe.
 pub const c = @import("c_api.zig").raw;
 pub const Error = @import("error.zig").Error;
 pub const LogLevel = @import("setup.zig").LogLevel;
