@@ -1,6 +1,6 @@
 # SDK tests
 
-`tests/sdk_test.zig` exercises the public synchronous API against the supplied
+`zig build abi-parity` first proves exact classification of all 48 public C functions and 27 public typedefs, including a synthetic missing/extra declaration regression test and a structural check of `docs/abi-parity.md`. `tests/sdk_test.zig` exercises the public synchronous API against the supplied
 Turso SDK Kit runtime. Dedicated `setup_*.zig` executables isolate native
 process-global, non-resettable tracing state. Together they verify the safe
 0.7.1 runtime version accessor, exhaustive log levels, owned invalid-setup
@@ -34,10 +34,15 @@ runs in a dedicated executable; tests never continue after a loaded extension
 reports failure. Turso 0.7.1 cannot supply managed ERROR callback arguments at
 SQL runtime.
 
+Managed callbacks and all callback/context/state deinitializers must not panic because unwinding across the C calling convention boundary is invalid. Expected callback failures use managed SQL error results; connection or statement reentry is rejected.
+
 Run the complete suite with Zig 0.16.0 and a native library built from Turso
 tag `v0.7.1`:
 
 ```bash
+zig build abi-parity \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
+  -Dturso-linkage=dynamic
 zig build test \
   -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
   -Dturso-linkage=dynamic

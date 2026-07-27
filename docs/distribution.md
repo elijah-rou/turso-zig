@@ -5,7 +5,7 @@ Managed wrappers enforce their documented safety contracts; the explicitly
 unsafe native-extension loader is a full ABI trust boundary. v0 vendors
 `vendor/turso-sdk-kit-0.7.1/turso.h` from Turso tag
 `v0.7.1` and requires a `turso_sdk_kit` library built from that exact tag for
-the same target ABI. A current Turso `main` or 0.8 pre-release library must not
+the same target ABI. `zig build abi-parity` proves exact classification and compile references for all 48 public functions and 27 public typedefs; see [`abi-parity.md`](abi-parity.md). A current Turso `main` or 0.8 pre-release library must not
 be substituted.
 
 ## Implemented caller-supplied model
@@ -13,6 +13,9 @@ be substituted.
 Every compile or run command requires a directory containing the native library:
 
 ```bash
+zig build abi-parity \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
+  -Dturso-linkage=dynamic
 zig build test \
   -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
   -Dturso-linkage=dynamic
@@ -40,8 +43,7 @@ is not complete until its Rust and platform system-library dependencies are
 enumerated and tested. No macOS or Windows runtime support is claimed.
 
 The tests and example call `turso_version()` and accept only `0.7.1` followed
-by end of string, `-`, or `+`. This catches obvious mismatches but cannot prove
-full ABI identity. Artifact provenance and exact header/source matching remain
+by end of string, `-`, or `+`. This catches obvious runtime mismatches. The compile-time parity audit additionally checks imported declarations, callback calling conventions, enum tags, and critical layouts, but cannot prove that an arbitrary binary was built from the claimed source. Artifact provenance and exact header/source matching remain
 release requirements.
 
 ## CI provenance
@@ -53,9 +55,14 @@ bounded timeout. CI also builds the workspace's exact `limbo_regexp` package
 with `--locked --profile release-official`, verifies the resulting Linux shared
 library exports `register_extension`, and passes its absolute path to the
 extension parity test. Cargo is maintainer-side CI setup, not consumer
+<<<<<<< HEAD
 `build.zig` behavior. CI then sets the loader path and runs formatting, the
 full tests, the basic example, and an exact base-to-head `git diff --check`
 against those artifacts.
+=======
+`build.zig` behavior. CI then sets the loader path and runs the ABI parity gate before runtime tests, followed by formatting, the
+full tests, the basic example, and `git diff --check` against those artifacts.
+>>>>>>> 9a6033d (docs: publish complete 0.7.1 adapter parity)
 
 ## Future published artifacts
 

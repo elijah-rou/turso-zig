@@ -1,12 +1,14 @@
 # Examples
 
-`basic.zig` is the runnable synchronous SDK example. It initializes a
+`basic.zig` is the runnable synchronous SDK example. `parity.zig` adds concise managed scalar, aggregate, and collation registrations plus the caller-driven `openProgress`/`stepProgress`/`runIo`/`finalizeProgress` loop. Neither example loads native extension code. It initializes a
 leak-checking allocator, rejects a loaded runtime outside the 0.7.1-compatible
 version family, opens `:memory:`, creates a table, inserts positional text and
 integer values, streams rows, inspects and frees copied `Value`s, and prints an
 owner's retained SQL diagnostic when a native operation fails.
 
-The example finalizes and deinitializes statements, then closes and
+`zig build run-example` runs both programs. Managed callbacks and deinitializers must never panic because a panic cannot unwind across the C ABI boundary; return a managed error for expected callback failures. The examples demonstrate the safe adapters without crossing the arbitrary-native-code extension trust boundary.
+
+Each example finalizes and deinitializes statements, then closes and
 deinitializes the connection, then deinitializes the database. This
 reverse-acquisition order is required because each native owner must outlive
 its children. Owners are non-copyable by contract and connections/statements
@@ -19,6 +21,8 @@ zig build run-example \
   -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
   -Dturso-linkage=dynamic
 ```
+
+The complete 0.7.1 manifest and its two public limitations are documented in [`../docs/abi-parity.md`](../docs/abi-parity.md): there is no database-open `run_io` driver, and arbitrary native extension code cannot be made memory-safe.
 
 The consumer build does not invoke Cargo. Dynamic Ubuntu x86_64 is verified;
 static linkage and other operating systems are not runtime-qualified. The
