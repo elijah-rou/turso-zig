@@ -858,6 +858,10 @@ test "managed aggregates cover fixed variadic zero-row groups DISTINCT and FILTE
     var filtered = try queryValue(&connection, "SELECT zig_sum(DISTINCT v) FILTER (WHERE v < 5) FROM aggregate_values");
     defer filtered.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i64, 7), filtered.integer);
+    var step_failure = try connection.prepareSingle("SELECT zig_sum('bad')");
+    defer step_failure.deinit();
+    try std.testing.expectError(turso.Error.SqlError, step_failure.step());
+    try std.testing.expect(std.mem.indexOf(u8, step_failure.latestDiagnostic() orelse "", "integer required") != null);
 
     var groups = try connection.prepareSingle("SELECT g, zig_sum(v) FROM aggregate_values GROUP BY g ORDER BY g");
     defer groups.deinit();
@@ -882,8 +886,11 @@ const AggregateResultState = struct { value: turso.CallbackResult };
 fn resultInit(context: *AggregateResultState) ?turso.CallbackResult {
     return context.value;
 }
-fn resultStep(_: *AggregateResultState, _: *turso.CallbackResult, _: turso.CallbackArgs) turso.CallbackResult {
-    return .null;
+fn resultStep(_: *AggregateResultState, state: *turso.CallbackResult, _: turso.CallbackArgs) turso.CallbackResult {
+    return switch (state.*) {
+        .managed_error => .null,
+        else => state.*,
+    };
 }
 fn resultFinal(_: *AggregateResultState, state: *turso.CallbackResult) turso.CallbackResult {
     return state.*;
@@ -964,4 +971,107 @@ test "aggregate callbacks and destructors reject connection and statement reentr
     active_statement = null;
     try connection.unregisterFunction("zig_aggregate_reentry");
     try std.testing.expect(deinit_rejected);
+}
+
+const AggregateLifetimeContext = struct {
+    state_deinits: *usize,
+    context_deinits: *usize,
+};
+fn lifetimeInit(_: *AggregateLifetimeContext) ?u8 {
+    return 0;
+}
+fn lifetimeStep(_: *AggregateLifetimeContext, state: *u8, _: turso.CallbackArgs) turso.CallbackResult {
+    state.* +%= 1;
+    return .null;
+}
+fn lifetimeFinal(_: *AggregateLifetimeContext, state: *u8) turso.CallbackResult {
+    return .{ .integer = state.* };
+}
+fn lifetimeStateDeinit(context: *AggregateLifetimeContext, _: *u8) void {
+    context.state_deinits.* += 1;
+}
+fn lifetimeContextDeinit(context: *AggregateLifetimeContext) void {
+    context.context_deinits.* += 1;
+}
+fn lifetimeAggregate(state_deinits: *usize, context_deinits: *usize) turso.AggregateFunction(AggregateLifetimeContext, u8) {
+    return .{
+        .context = .{ .state_deinits = state_deinits, .context_deinits = context_deinits },
+        .init = lifetimeInit,
+        .step = lifetimeStep,
+        .final = lifetimeFinal,
+        .state_deinit = lifetimeStateDeinit,
+        .context_deinit = lifetimeContextDeinit,
+    };
+}
+
+test "aggregate replacement unregister failures and connection teardown own lifetimes exactly once" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var state_deinits: usize = 0;
+    var context_deinits: usize = 0;
+    {
+        var connection = try database.connect();
+        defer connection.deinit();
+        try connection.registerAggregateFunction("zig_lifetime", .{ .fixed = 1 }, lifetimeAggregate(&state_deinits, &context_deinits));
+        var value = try queryValue(&connection, "SELECT zig_lifetime(v) FROM (SELECT 1 AS v UNION ALL SELECT 2)");
+        value.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(usize, 1), state_deinits);
+
+        var retired = try connection.prepareSingle("SELECT zig_lifetime(v) FROM (SELECT 1 AS v)");
+        try connection.registerAggregateFunction("zig_lifetime", .{ .fixed = 1 }, lifetimeAggregate(&state_deinits, &context_deinits));
+        try std.testing.expectEqual(@as(usize, 1), context_deinits);
+        retired.deinit();
+        try std.testing.expectEqual(@as(usize, 1), context_deinits);
+
+        var failure = try connection.prepareSingle("SELECT zig_lifetime('bad')");
+        // This aggregate accepts every value; use the fixed-arity mismatch to
+        // verify native failure does not consume the active registration.
+        try std.testing.expectError(turso.Error.SqlError, connection.prepareSingle("SELECT zig_lifetime()"));
+        try connection.unregisterFunction("zig_lifetime");
+        try std.testing.expectEqual(@as(usize, 2), context_deinits);
+        failure.deinit();
+        try std.testing.expectEqual(@as(usize, 2), context_deinits);
+        try std.testing.expectError(turso.Error.SqlError, connection.prepareSingle("SELECT zig_lifetime(1)"));
+
+        try connection.registerAggregateFunction("zig_teardown", .{ .fixed = 1 }, lifetimeAggregate(&state_deinits, &context_deinits));
+    }
+    try std.testing.expectEqual(@as(usize, 3), context_deinits);
+}
+
+test "pre-native aggregate registration allocation failure leaves context caller-owned" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var state_deinits: usize = 0;
+    var context_deinits: usize = 0;
+    var function = lifetimeAggregate(&state_deinits, &context_deinits);
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    connection.allocator = failing.allocator();
+    try std.testing.expectError(
+        turso.Error.OutOfMemory,
+        connection.registerAggregateFunction("zig_aggregate_allocation_failure", .{ .fixed = 1 }, function),
+    );
+    connection.allocator = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 0), context_deinits);
+    lifetimeContextDeinit(&function.context);
+    try std.testing.expectEqual(@as(usize, 1), context_deinits);
+}
+
+test "managed aggregate validates names and arities before taking ownership" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var state_deinits: usize = 0;
+    var context_deinits: usize = 0;
+    const function = lifetimeAggregate(&state_deinits, &context_deinits);
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerAggregateFunction("", .variadic, function));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerAggregateFunction("bad\x00name", .variadic, function));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerAggregateFunction("bad\xff", .variadic, function));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerAggregateFunction("too_many", .{ .fixed = 128 }, function));
+    try std.testing.expectEqual(@as(usize, 0), context_deinits);
 }

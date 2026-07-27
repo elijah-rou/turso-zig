@@ -79,6 +79,20 @@ pub fn ScalarFunction(comptime Context: type) type {
     };
 }
 
+/// A managed aggregate owns one registration context and one `State` per SQL
+/// group. Callbacks and deinitializers must not panic or re-enter the owning
+/// connection or any statement created by it.
+pub fn AggregateFunction(comptime Context: type, comptime State: type) type {
+    return struct {
+        context: Context,
+        init: *const fn (context: *Context) ?State,
+        step: *const fn (context: *Context, state: *State, args: CallbackArgs) CallbackResult,
+        final: *const fn (context: *Context, state: *State) CallbackResult,
+        state_deinit: ?*const fn (context: *Context, state: *State) void = null,
+        context_deinit: ?*const fn (context: *Context) void = null,
+    };
+}
+
 pub const DecodeError = error{
     InvalidArgumentCount,
     MissingArguments,

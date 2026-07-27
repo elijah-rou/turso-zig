@@ -89,6 +89,26 @@ comptime {
         @compileError("Turso SDK Kit 0.7.1 callback signature mismatch");
     }
 
+    const aggregate_init_pointer = @typeInfo(raw.turso_aggregate_init_function_t).optional.child;
+    const aggregate_step_pointer = @typeInfo(raw.turso_aggregate_step_function_t).optional.child;
+    const aggregate_final_pointer = @typeInfo(raw.turso_aggregate_final_function_t).optional.child;
+    const aggregate_init_signature = @typeInfo(@typeInfo(aggregate_init_pointer).pointer.child).@"fn";
+    const aggregate_step_signature = @typeInfo(@typeInfo(aggregate_step_pointer).pointer.child).@"fn";
+    const aggregate_final_signature = @typeInfo(@typeInfo(aggregate_final_pointer).pointer.child).@"fn";
+    if (@sizeOf(raw.turso_agg_ctx_t) != @sizeOf(?*anyopaque) or
+        @offsetOf(raw.turso_agg_ctx_t, "state") != 0 or
+        aggregate_init_signature.params.len != 1 or
+        aggregate_init_signature.return_type.? != [*c]raw.turso_agg_ctx_t or
+        aggregate_step_signature.params.len != 4 or
+        aggregate_step_signature.params[1].type.? != [*c]raw.turso_agg_ctx_t or
+        aggregate_step_signature.return_type.? != raw.turso_value_t or
+        aggregate_final_signature.params.len != 2 or
+        aggregate_final_signature.params[1].type.? != [*c]raw.turso_agg_ctx_t or
+        aggregate_final_signature.return_type.? != raw.turso_value_t)
+    {
+        @compileError("Turso SDK Kit 0.7.1 aggregate callback signature/layout mismatch");
+    }
+
     assertConstant("TURSO_COLUMN_KIND_NONE", raw.TURSO_COLUMN_KIND_NONE, -1);
     assertConstant("TURSO_COLUMN_KIND_BUILTIN", raw.TURSO_COLUMN_KIND_BUILTIN, 0);
     assertConstant("TURSO_COLUMN_KIND_CUSTOM", raw.TURSO_COLUMN_KIND_CUSTOM, 1);

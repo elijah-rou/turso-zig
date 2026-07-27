@@ -47,7 +47,7 @@ only by end of string, `-`, or `+`.
 
 The public surface exports `version`, `setup`, `SetupConfig`, `SetupResult`,
 `SetupFailure`, `Logger`, `Log`, `LogLevel`, `Database`, `Connection`,
-`Statement`, `Value`, managed scalar callback value/result/context types,
+`Statement`, `Value`, managed scalar and aggregate callback value/result/context types,
 `Arity`, `ExtensionResultCode`, `ExtensionTextSubtype`, `Step`, `ColumnKind`,
 `Error`, `ConstructionFailure`, and the explicitly unstable raw `c` namespace. Setup validates bounded strings and
 returns owned native diagnostics. Its first successful process-global level
@@ -72,9 +72,18 @@ supply ERROR arguments; those decoder cases remain ABI-defensive. JSON results
 and text/blob/error results are copied into at most 16 MiB of package-owned
 backing and released by the always-supplied value destructor.
 
-Defer cloud sync, aggregate functions, collations, loadable extensions, and
-async I/O. Each deferred area requires a separate ownership, scheduler, or
-trust-boundary design.
+Managed aggregates add a typed per-group state initialized into heap-stable
+boxes. Step/final callbacks reuse the scalar argument/result codec and always
+supply the value destructor. Turso 0.7.1 statement reset and teardown can
+replace aggregate registers without invoking `aggregate_destructor`, so each
+registration owns a bounded 4096-live-state registry. Native destruction
+removes and frees normal state exactly once; registration destruction runs only
+after native programs can no longer refer to the boxes and reclaims abandoned
+state. Repeated step/final calls and pointers absent from the live registry
+return managed errors without dereferencing the candidate state.
+
+Defer cloud sync, collations, loadable extensions, and async I/O. Each deferred
+area requires a separate ownership, scheduler, or trust-boundary design.
 
 ## 2. Treat `turso.h` as the ABI source of truth
 
@@ -168,8 +177,8 @@ binding's public ownership, conversion, and error contract.
 
 - **Cloud sync:** map remote URL, auth token, push/pull/checkpoint, and sync
   statistics after identifying the corresponding supported C ABI surface.
-- **Callbacks:** aggregate functions and collations require separate state and
-  ownership designs; scalar support does not imply either contract.
+- **Callbacks:** collations require a separate ordering and ownership design;
+  scalar and aggregate support does not imply that contract.
 - **Extensions:** default disabled; enabling loading changes the application's
   trust boundary.
 - **Async I/O:** expose progress without blocking an event loop and define
