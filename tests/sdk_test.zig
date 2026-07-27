@@ -790,3 +790,178 @@ fn expectStatus(
     try std.testing.expectEqual(expected, actual);
     try std.testing.expect(error_message.* == null);
 }
+
+const AggregateCounters = struct {
+    inits: usize = 0,
+    steps: usize = 0,
+    finals: usize = 0,
+    state_deinits: usize = 0,
+    context_deinits: *usize,
+};
+
+const SumState = struct { sum: i64 = 0 };
+
+fn aggregateInit(context: *AggregateCounters) ?SumState {
+    context.inits += 1;
+    return .{};
+}
+
+fn aggregateStep(context: *AggregateCounters, state: *SumState, args: turso.CallbackArgs) turso.CallbackResult {
+    context.steps += 1;
+    for (args.values) |value| switch (value) {
+        .integer => |integer| state.sum += integer,
+        .null => {},
+        else => return .{ .managed_error = .{ .code = .invalid_args, .message = "integer required" } },
+    };
+    return .null;
+}
+
+fn aggregateFinal(context: *AggregateCounters, state: *SumState) turso.CallbackResult {
+    context.finals += 1;
+    return .{ .integer = state.sum };
+}
+
+fn aggregateStateDeinit(context: *AggregateCounters, _: *SumState) void {
+    context.state_deinits += 1;
+}
+
+fn aggregateContextDeinit(context: *AggregateCounters) void {
+    context.context_deinits.* += 1;
+}
+
+fn sumAggregate(context_deinits: *usize) turso.AggregateFunction(AggregateCounters, SumState) {
+    return .{
+        .context = .{ .context_deinits = context_deinits },
+        .init = aggregateInit,
+        .step = aggregateStep,
+        .final = aggregateFinal,
+        .state_deinit = aggregateStateDeinit,
+        .context_deinit = aggregateContextDeinit,
+    };
+}
+
+test "managed aggregates cover fixed variadic zero-row groups DISTINCT and FILTER" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var context_deinits: usize = 0;
+
+    try connection.registerAggregateFunction("zig_sum", .{ .fixed = 1 }, sumAggregate(&context_deinits));
+    _ = try exec(&connection, "CREATE TABLE aggregate_values(g TEXT, v INTEGER)");
+    _ = try exec(&connection, "INSERT INTO aggregate_values VALUES ('a',1),('a',1),('a',2),('b',4),('b',5)");
+
+    var zero = try queryValue(&connection, "SELECT zig_sum(v) FROM aggregate_values WHERE 0");
+    defer zero.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 0), zero.integer);
+    var filtered = try queryValue(&connection, "SELECT zig_sum(DISTINCT v) FILTER (WHERE v < 5) FROM aggregate_values");
+    defer filtered.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 7), filtered.integer);
+
+    var groups = try connection.prepareSingle("SELECT g, zig_sum(v) FROM aggregate_values GROUP BY g ORDER BY g");
+    defer groups.deinit();
+    try std.testing.expectEqual(turso.Step.row, try groups.step());
+    var first = try groups.value(1);
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 4), first.integer);
+    try std.testing.expectEqual(turso.Step.row, try groups.step());
+    var second = try groups.value(1);
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 9), second.integer);
+    try std.testing.expectEqual(turso.Step.done, try groups.step());
+
+    try connection.registerAggregateFunction("zig_variadic_sum", .variadic, sumAggregate(&context_deinits));
+    var variadic = try queryValue(&connection, "SELECT zig_variadic_sum(v, 1) FROM aggregate_values");
+    defer variadic.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 18), variadic.integer);
+    try std.testing.expectError(turso.Error.SqlError, connection.prepareSingle("SELECT zig_sum()"));
+}
+
+const AggregateResultState = struct { value: turso.CallbackResult };
+fn resultInit(context: *AggregateResultState) ?turso.CallbackResult {
+    return context.value;
+}
+fn resultStep(_: *AggregateResultState, _: *turso.CallbackResult, _: turso.CallbackArgs) turso.CallbackResult {
+    return .null;
+}
+fn resultFinal(_: *AggregateResultState, state: *turso.CallbackResult) turso.CallbackResult {
+    return state.*;
+}
+
+test "managed aggregate final copies every SQL result kind and reports managed errors" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+
+    const cases = [_]struct { result: turso.CallbackResult, sql: []const u8 }{
+        .{ .result = .null, .sql = "SELECT zig_result(1) IS NULL" },
+        .{ .result = .{ .integer = 42 }, .sql = "SELECT zig_result(1) = 42" },
+        .{ .result = .{ .float = 1.5 }, .sql = "SELECT zig_result(1) = 1.5" },
+        .{ .result = .{ .text = .{ .subtype = .text, .bytes = "text" } }, .sql = "SELECT zig_result(1) = 'text'" },
+        .{ .result = .{ .text = .{ .subtype = .json, .bytes = "{\"a\":1}" } }, .sql = "SELECT json_type(zig_result(1)) = 'object'" },
+        .{ .result = .{ .blob = &.{ 0, 1, 255 } }, .sql = "SELECT zig_result(1) = x'0001ff'" },
+    };
+    for (cases) |case| {
+        try connection.registerAggregateFunction("zig_result", .{ .fixed = 1 }, turso.AggregateFunction(AggregateResultState, turso.CallbackResult){
+            .context = .{ .value = case.result },
+            .init = resultInit,
+            .step = resultStep,
+            .final = resultFinal,
+        });
+        var value = try queryValue(&connection, case.sql);
+        defer value.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(i64, 1), value.integer);
+    }
+
+    inline for (@typeInfo(turso.ExtensionResultCode).@"enum".fields) |field| {
+        try connection.registerAggregateFunction("zig_result_error", .{ .fixed = 0 }, turso.AggregateFunction(AggregateResultState, turso.CallbackResult){
+            .context = .{ .value = .{ .managed_error = .{ .code = @enumFromInt(field.value), .message = "aggregate failure" } } },
+            .init = resultInit,
+            .step = resultStep,
+            .final = resultFinal,
+        });
+        var statement = try connection.prepareSingle("SELECT zig_result_error()");
+        defer statement.deinit();
+        try std.testing.expectError(turso.Error.SqlError, statement.step());
+    }
+}
+
+const ReentryAggregateState = struct {};
+fn reentryAggregateInit(_: *ReentryContext) ?ReentryAggregateState {
+    return .{};
+}
+fn reentryAggregateStep(context: *ReentryContext, _: *ReentryAggregateState, _: turso.CallbackArgs) turso.CallbackResult {
+    return reentryScalar(context, .{ .values = &.{} });
+}
+fn reentryAggregateFinal(context: *ReentryContext, _: *ReentryAggregateState) turso.CallbackResult {
+    return reentryScalar(context, .{ .values = &.{} });
+}
+
+test "aggregate callbacks and destructors reject connection and statement reentry" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var callback_rejected = false;
+    var deinit_rejected = false;
+    var active_statement: ?*turso.Statement = null;
+    try connection.registerAggregateFunction("zig_aggregate_reentry", .{ .fixed = 1 }, turso.AggregateFunction(ReentryContext, ReentryAggregateState){
+        .context = .{ .connection = &connection, .statement = &active_statement, .callback_rejected = &callback_rejected, .deinit_rejected = &deinit_rejected },
+        .init = reentryAggregateInit,
+        .step = reentryAggregateStep,
+        .final = reentryAggregateFinal,
+        .context_deinit = reentryDeinit,
+    });
+    var statement = try connection.prepareSingle("SELECT zig_aggregate_reentry(v) FROM (SELECT 1 AS v)");
+    active_statement = &statement;
+    try std.testing.expectError(turso.Error.SqlError, statement.step());
+    try std.testing.expect(callback_rejected);
+    statement.deinit();
+    active_statement = null;
+    try connection.unregisterFunction("zig_aggregate_reentry");
+    try std.testing.expect(deinit_rejected);
+}
