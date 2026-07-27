@@ -310,8 +310,9 @@ pub const Connection = struct {
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
     }
 
-    /// Controls only SQL `load_extension()` for this connection. Direct
-    /// `loadExtension` calls intentionally bypass this gate.
+    /// Controls only SQL `load_extension()` for this connection. Enabling it
+    /// authorizes every SQL submitter using this connection to execute native
+    /// code. Direct `loadExtensionUnsafe` calls intentionally bypass this gate.
     pub fn setSqlExtensionLoadingEnabled(self: *Connection, enabled: bool) errors.Error!void {
         const handle = try self.beginOperation();
         try self.rejectActiveExtensionMutation();
@@ -321,9 +322,15 @@ pub const Connection = struct {
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
     }
 
-    /// Loads arbitrary native code into this process. A successful library is
-    /// retained by Turso for process lifetime and cannot be unloaded here.
-    pub fn loadExtension(self: *Connection, path: []const u8) errors.Error!void {
+    /// Executes trusted arbitrary native code with the process's privileges.
+    /// This is the full ABI trust-boundary adapter, not a memory-safe or
+    /// recoverable wrapper. It accepts only an absolute path and provides no
+    /// sandbox or unload operation. Turso retains successful libraries for the
+    /// process lifetime. Native v0.7.1 registration and schema refresh are not
+    /// transactional: a failure after loading may leave partial registrations
+    /// while unloading their code. Such a failure is not safely recoverable;
+    /// terminate the process without using the connection or registrations.
+    pub fn loadExtensionUnsafe(self: *Connection, path: []const u8) errors.Error!void {
         const handle = try self.beginOperation();
         try self.rejectActiveExtensionMutation();
         try self.validateExtensionPath(path);
@@ -473,10 +480,10 @@ pub const Connection = struct {
     }
 
     fn validateExtensionPath(self: *Connection, path: []const u8) errors.Error!void {
-        if (path.len == 0 or path.len > 4095 or std.mem.indexOfScalar(u8, path, 0) != null or
-            !std.unicode.utf8ValidateSlice(path))
+        if (path.len == 0 or path.len > 4095 or !std.fs.path.isAbsolute(path) or
+            std.mem.indexOfScalar(u8, path, 0) != null or !std.unicode.utf8ValidateSlice(path))
         {
-            try errors.setDiagnostic(self.allocator, &self.diagnostic, "extension path must be 1..4095 UTF-8 bytes without NUL");
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "extension path must be an absolute 1..4095-byte UTF-8 path without NUL");
             return errors.Error.InvalidArgument;
         }
     }

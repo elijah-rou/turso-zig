@@ -5,8 +5,8 @@ implemented API exposes the runtime version and process-global tracing setup,
 opens local databases, prepares statements, binds positional values, executes
 SQL, streams rows, copies typed values, exposes metadata and transaction state,
 registers managed scalar and aggregate functions and collations, controls SQL
-extension loading, directly loads trusted native extensions, and retains native
-diagnostics.
+extension loading, exposes an explicitly unsafe native-extension trust boundary,
+and retains native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
 Loadable extensions are qualified only on that Linux dynamic path. macOS,
@@ -50,16 +50,31 @@ version family (`0.7.1`, `0.7.1-*`, or `0.7.1+*`).
 `Connection.setSqlExtensionLoadingEnabled` controls the SQL
 `load_extension()` function per connection. It is disabled by default, enabling
 one connection does not affect another, and disabling it restores rejection.
-`Connection.loadExtension` calls Turso's native loader directly and deliberately
-bypasses the SQL gate. Neither API searches for libraries, invokes Cargo, or
-provides unload behavior.
+Enabling the gate authorizes every component that can submit SQL on that
+connection to execute native code. It is not a per-statement or per-caller
+capability.
 
-Loading an extension executes arbitrary native code with the process's full
-privileges. Pass only an explicit, trusted path. The wrapper rejects empty,
-non-UTF-8, embedded-NUL, and paths longer than 4095 bytes. Both controls reject
-callback/deinitializer reentry and reject mutation while any statement exists
-on that connection. Turso retains successfully loaded libraries for process
-lifetime, so closing a connection does not unload them.
+`Connection.loadExtensionUnsafe` is the direct ABI trust-boundary adapter and
+deliberately bypasses the SQL gate. It executes trusted arbitrary native code
+with the process's full privileges; Zig cannot make extension code memory-safe.
+It requires a nonempty absolute UTF-8 path of at most 4095 bytes with no NUL.
+There is no safe alias, sandbox, or unload operation. Both controls reject
+callback/deinitializer reentry and mutation while any statement exists.
+
+Turso's native resolution first checks the supplied path and, when it is absent
+and has no shared-library suffix, may append the platform suffix. The direct Zig
+method still requires that supplied path to be absolute. SQL `load_extension()`
+passes SQL text through native resolution without that programmatic absolute-path
+restriction, so relative or bare SQL arguments remain native behavior. Neither
+path invokes Cargo or searches arbitrary library directories.
+
+Native v0.7.1 loading is not transactional. Extension registration can mutate
+function/module tables before reporting failure, after which native code may be
+unloaded; schema refresh can also fail after a successful registration. Any
+failure after a library was loaded is not safely recoverable. Terminate the
+process without using the connection or partially registered symbols. A
+successful library is retained for process lifetime, so connection close does
+not unload it.
 
 Positive integration is qualified only for Linux dynamic linking with the exact
 Turso v0.7.1 `limbo_regexp` cdylib. Consumer builds never run Cargo. Ordinary

@@ -1,7 +1,9 @@
 # Native-library distribution
 
-The Zig package is a safe API layer over a caller-supplied native Turso
-library. v0 vendors `vendor/turso-sdk-kit-0.7.1/turso.h` from Turso tag
+The Zig package is an API layer over a caller-supplied native Turso library.
+Managed wrappers enforce their documented safety contracts; the explicitly
+unsafe native-extension loader is a full ABI trust boundary. v0 vendors
+`vendor/turso-sdk-kit-0.7.1/turso.h` from Turso tag
 `v0.7.1` and requires a `turso_sdk_kit` library built from that exact tag for
 the same target ABI. A current Turso `main` or 0.8 pre-release library must not
 be substituted.

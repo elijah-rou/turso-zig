@@ -34,17 +34,16 @@ pub fn main() !void {
     var direct = try openConnection();
     defer direct.database.deinit();
     defer direct.connection.deinit();
-    try direct.connection.loadExtension(fixture.path);
+    try direct.connection.loadExtensionUnsafe(fixture.path);
     try expectInteger(&direct.connection, "SELECT regexp_like('abc123', '[0-9]+')", 1);
 
     var sql = try openConnection();
     defer sql.database.deinit();
     defer sql.connection.deinit();
     try sql.connection.setSqlExtensionLoadingEnabled(true);
-    const quoted_path = try std.fmt.allocPrint(std.heap.page_allocator, "SELECT load_extension('{s}')", .{fixture.path});
-    defer std.heap.page_allocator.free(quoted_path);
-    var load = try sql.connection.prepareSingle(quoted_path);
+    var load = try sql.connection.prepareSingle("SELECT load_extension(?1)");
     defer load.deinit();
+    try load.bindText(1, fixture.path);
     try std.testing.expectEqual(turso.Step.row, try load.step());
     try expectInteger(&sql.connection, "SELECT regexp_like('zig', '^z')", 1);
 }

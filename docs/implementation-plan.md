@@ -59,7 +59,8 @@ dropped. Database configuration covers the local path and
 the optional 0.7.1 experimental-feature, VFS, and encryption strings while
 forcing `async_io = 0`. Connection methods expose prepare-first/single, busy timeout, autocommit, last
 insert rowid, managed collation registration/unregistration, per-connection SQL
-extension gating, direct trusted extension loading, close, and deinit.
+extension gating, explicitly unsafe direct trusted-extension loading, close,
+and deinit.
 Statement methods
 cover positional binds, execute/step, parameter and column metadata, copied row
 values, changes, reset, finalize, and deinit.
@@ -104,12 +105,23 @@ and explicit sorting. Schema declarations, indexes, uniqueness constraints,
 and persisted schemas that name managed collations remain explicitly unclaimed.
 
 Extension loading is disabled through SQL by default and enabled per
-connection. The direct native loader bypasses that SQL gate. Both controls
-reject managed-callback reentry and active-statement mutation. Paths are bounded
-to 4095 UTF-8 bytes without NUL. Loading executes arbitrary native code; Turso
-retains successful libraries for process lifetime and this binding exposes no
-unload. Runtime qualification is limited to Linux dynamic linking with the
-pinned v0.7.1 regexp fixture.
+connection. Enabling it authorizes every SQL submitter on that connection to
+execute native code. `loadExtensionUnsafe` bypasses the SQL gate and is the full
+ABI trust-boundary adapter, not a safe recoverable wrapper. It requires a
+nonempty absolute UTF-8 path of at most 4095 bytes without NUL. SQL arguments
+have no Zig absolute-path restriction. Native resolution checks the supplied
+path and may append the platform shared-library suffix when the path is absent
+and has no such suffix.
+
+Both controls reject managed-callback reentry and active-statement mutation.
+Loading executes arbitrary native code that Zig cannot make memory-safe; there
+is no sandbox or unload operation. Turso v0.7.1 registration and schema refresh
+are nontransactional. Registration may partially mutate native tables and then
+fail while unloading the library, and schema refresh may fail after successful
+registration. Any failure after native loaded a library requires process
+termination rather than continued use of the connection or registrations.
+Successful libraries remain loaded for process lifetime. Runtime qualification
+is limited to Linux dynamic linking with the pinned v0.7.1 regexp fixture.
 
 Defer cloud sync and async I/O. Each deferred area requires a separate
 ownership or scheduler design.

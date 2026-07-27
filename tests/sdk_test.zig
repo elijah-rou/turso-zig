@@ -389,9 +389,9 @@ test "file persistence and early row-loop cleanup" {
     }
 }
 
-test "extension control public signatures distinguish the SQL gate from direct loading" {
+test "extension control public signatures distinguish the SQL gate from unsafe direct loading" {
     const set_gate: *const fn (*turso.Connection, bool) turso.Error!void = turso.Connection.setSqlExtensionLoadingEnabled;
-    const direct_load: *const fn (*turso.Connection, []const u8) turso.Error!void = turso.Connection.loadExtension;
+    const direct_load: *const fn (*turso.Connection, []const u8) turso.Error!void = turso.Connection.loadExtensionUnsafe;
     _ = set_gate;
     _ = direct_load;
 }
@@ -424,37 +424,66 @@ test "SQL extension loading is disabled by default and enabled per connection" {
     try expectSqlExtensionFailure(&enabled, "runtime extension loading is disabled");
 }
 
-test "direct extension loading bypasses the SQL gate and replaces diagnostics" {
+test "unsafe direct extension loading bypasses the SQL gate for an isolated missing path" {
     var database = try openDatabase(":memory:");
     defer database.deinit();
     try database.open();
     var connection = try database.connect();
     defer connection.deinit();
 
-    try std.testing.expectError(turso.Error.SqlError, connection.loadExtension("definitely_missing_extension"));
+    try std.testing.expectError(turso.Error.SqlError, connection.loadExtensionUnsafe("/definitely/missing/libextension.so"));
     const missing = connection.latestDiagnostic() orelse return error.MissingDirectExtensionDiagnostic;
     try std.testing.expect(std.mem.indexOf(u8, missing, "Extension file not found") != null);
     try std.testing.expect(std.mem.indexOf(u8, missing, "runtime extension loading is disabled") == null);
-    try connection.setSqlExtensionLoadingEnabled(false);
-    try std.testing.expect(connection.latestDiagnostic() == null);
 }
 
-test "extension controls validate paths state and active statements before native mutation" {
+test "unsafe direct extension loading validates absolute bounded UTF-8 paths and replaces diagnostics" {
     var database = try openDatabase(":memory:");
     defer database.deinit();
     try database.open();
     var connection = try database.connect();
     defer connection.deinit();
 
-    try std.testing.expectError(turso.Error.InvalidArgument, connection.loadExtension("bad\x00path"));
-    try std.testing.expectEqualStrings(
-        "extension path must be 1..4095 UTF-8 bytes without NUL",
-        connection.latestDiagnostic() orelse return error.MissingNulExtensionDiagnostic,
-    );
+    const diagnostic = "extension path must be an absolute 1..4095-byte UTF-8 path without NUL";
+    const invalid_paths = [_][]const u8{
+        "",
+        "relative/path.so",
+        "libbare.so",
+        "/bad\xffpath.so",
+        "/bad\x00path.so",
+    };
+    for (invalid_paths) |path| {
+        try std.testing.expectError(turso.Error.InvalidArgument, connection.loadExtensionUnsafe(path));
+        try std.testing.expectEqualStrings(
+            diagnostic,
+            connection.latestDiagnostic() orelse return error.MissingInvalidExtensionPathDiagnostic,
+        );
+    }
+
+    const accepted = try std.testing.allocator.alloc(u8, 4095);
+    defer std.testing.allocator.free(accepted);
+    @memset(accepted, 'x');
+    accepted[0] = '/';
+    try std.testing.expectError(turso.Error.SqlError, connection.loadExtensionUnsafe(accepted));
+    try std.testing.expect(!std.mem.eql(u8, diagnostic, connection.latestDiagnostic() orelse ""));
+
     const oversized = try std.testing.allocator.alloc(u8, 4096);
     defer std.testing.allocator.free(oversized);
     @memset(oversized, 'x');
-    try std.testing.expectError(turso.Error.InvalidArgument, connection.loadExtension(oversized));
+    oversized[0] = '/';
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.loadExtensionUnsafe(oversized));
+    try std.testing.expectEqualStrings(
+        diagnostic,
+        connection.latestDiagnostic() orelse return error.MissingOversizedExtensionPathDiagnostic,
+    );
+}
+
+test "extension controls reject active statements and closed connections before native mutation" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
 
     var statement = try connection.prepareSingle("SELECT 1");
     try std.testing.expectError(turso.Error.InvalidState, connection.setSqlExtensionLoadingEnabled(true));
@@ -462,13 +491,13 @@ test "extension controls validate paths state and active statements before nativ
         "extension controls cannot mutate the schema while statements are active",
         connection.latestDiagnostic() orelse return error.MissingActiveExtensionDiagnostic,
     );
-    try std.testing.expectError(turso.Error.InvalidState, connection.loadExtension("definitely_missing_extension"));
+    try std.testing.expectError(turso.Error.InvalidState, connection.loadExtensionUnsafe("/definitely/missing/libextension.so"));
     statement.deinit();
 
     try connection.close();
     try std.testing.expectError(turso.Error.InvalidState, connection.setSqlExtensionLoadingEnabled(true));
     try std.testing.expectEqualStrings("connection is closed", connection.latestDiagnostic().?);
-    try std.testing.expectError(turso.Error.InvalidState, connection.loadExtension("definitely_missing_extension"));
+    try std.testing.expectError(turso.Error.InvalidState, connection.loadExtensionUnsafe("/definitely/missing/libextension.so"));
 }
 
 test "managed scalar callbacks cover arity options and every SQL value kind" {
@@ -672,7 +701,7 @@ fn reentryScalar(context: *ReentryContext, _: turso.CallbackArgs) turso.Callback
         break :rejected false;
     };
     const direct_load_rejected = rejected: {
-        context.connection.loadExtension("definitely_missing_extension") catch |err| break :rejected err == turso.Error.InvalidState;
+        context.connection.loadExtensionUnsafe("/definitely/missing/libextension.so") catch |err| break :rejected err == turso.Error.InvalidState;
         break :rejected false;
     };
     context.callback_rejected.* = context.callback_rejected.* and gate_rejected and direct_load_rejected;
@@ -699,7 +728,7 @@ fn reentryDeinit(context: *ReentryContext) void {
         break :rejected false;
     };
     const direct_load_rejected = rejected: {
-        context.connection.loadExtension("definitely_missing_extension") catch |err| break :rejected err == turso.Error.InvalidState;
+        context.connection.loadExtensionUnsafe("/definitely/missing/libextension.so") catch |err| break :rejected err == turso.Error.InvalidState;
         break :rejected false;
     };
     context.deinit_rejected.* = prepare_rejected and gate_rejected and direct_load_rejected;
