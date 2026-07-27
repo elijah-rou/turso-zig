@@ -19,7 +19,7 @@ pub fn AggregateBox(comptime Context: type, comptime State: type) type {
     };
 }
 
-fn StateBox(comptime State: type) type {
+pub fn StateBox(comptime State: type) type {
     return struct {
         abi: c.turso_agg_ctx_t,
         state: State,

@@ -138,7 +138,7 @@ fn parseLogLevel(level: []const u8) ?LogLevel {
     return null;
 }
 
-fn loggerTrampoline(log_pointer: [*c]const c.turso_log_t) callconv(.c) void {
+pub fn loggerTrampoline(log_pointer: [*c]const c.turso_log_t) callconv(.c) void {
     if (log_pointer == null) return;
     if (logger_invocation_active) return;
 
