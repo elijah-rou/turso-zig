@@ -24,6 +24,10 @@ pub const Statement = struct {
     finalized: bool = false,
 
     pub fn latestDiagnostic(self: *const Statement) ?[]const u8 {
+        if (self.connection_owner_state.callback_active) {
+            self.connection_owner_state.recordCallbackViolation();
+            return self.diagnostic;
+        }
         std.debug.assert(self.handle != null);
         return self.diagnostic;
     }
@@ -70,6 +74,7 @@ pub const Statement = struct {
         var changes_count: u64 = 0;
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_execute(handle, &changes_count, &error_opt_out);
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
         try errors.finishExpected(
             self.allocator,
             status,
@@ -84,6 +89,7 @@ pub const Statement = struct {
         const handle = try self.beginMutation();
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_step(handle, &error_opt_out);
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
         const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
         switch (status) {
             c.TURSO_ROW => {
@@ -106,6 +112,7 @@ pub const Statement = struct {
         const handle = try self.beginMutationAllowFinalized();
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_reset(handle, &error_opt_out);
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
         try errors.finishExpected(self.allocator, status, c.TURSO_OK, error_opt_out, &self.diagnostic);
         self.finalized = false;
     }
@@ -114,11 +121,16 @@ pub const Statement = struct {
         const handle = try self.beginMutation();
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_finalize(handle, &error_opt_out);
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
         try errors.finishExpected(self.allocator, status, c.TURSO_DONE, error_opt_out, &self.diagnostic);
         self.finalized = true;
     }
 
     pub fn changes(self: *const Statement) i64 {
+        if (self.connection_owner_state.callback_active) {
+            self.connection_owner_state.recordCallbackViolation();
+            return 0;
+        }
         const handle = self.handle orelse {
             std.debug.assert(false);
             return 0;
@@ -214,6 +226,10 @@ pub const Statement = struct {
     }
 
     pub fn deinit(self: *Statement) void {
+        if (self.connection_owner_state.callback_active) {
+            self.connection_owner_state.recordCallbackViolation();
+            return;
+        }
         const handle = self.handle orelse {
             std.debug.assert(false);
             return;
@@ -228,6 +244,7 @@ pub const Statement = struct {
     }
 
     fn validHandle(self: *const Statement) errors.Error!*c.turso_statement_t {
+        try self.rejectCallbackReentry();
         return self.handle orelse {
             std.debug.assert(false);
             return errors.Error.InvalidState;
@@ -246,6 +263,7 @@ pub const Statement = struct {
     }
 
     fn beginMutation(self: *Statement) errors.Error!*c.turso_statement_t {
+        try self.rejectCallbackReentry();
         if (self.handle == null) {
             std.debug.assert(false);
             return errors.Error.InvalidState;
@@ -255,12 +273,22 @@ pub const Statement = struct {
     }
 
     fn beginMutationAllowFinalized(self: *Statement) errors.Error!*c.turso_statement_t {
+        try self.rejectCallbackReentry();
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         self.row_available = false;
         return self.handle orelse {
             std.debug.assert(false);
             return errors.Error.InvalidState;
         };
+    }
+
+    fn rejectCallbackReentry(self: *const Statement) errors.Error!void {
+        if (!self.connection_owner_state.callback_active) return;
+        self.connection_owner_state.recordCallbackViolation();
+        const mutable: *Statement = @constCast(self);
+        errors.clearDiagnostic(self.allocator, &mutable.diagnostic);
+        try errors.setDiagnostic(self.allocator, &mutable.diagnostic, "scalar callback re-entry is not allowed");
+        return errors.Error.InvalidState;
     }
 
     fn copyRowBytes(self: *const Statement, handle: *c.turso_statement_t, index: usize) errors.Error![]u8 {

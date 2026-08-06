@@ -4,12 +4,12 @@ An early synchronous Zig 0.16.0 SDK for Turso embedded/local databases. The
 implemented API exposes the runtime version and process-global tracing setup,
 opens local databases, prepares statements, binds positional values, executes
 SQL, streams rows, copies typed values, exposes metadata and transaction state,
-and retains native diagnostics.
+registers managed scalar functions, and retains native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
-macOS, Windows, cloud sync, SQL function/collation callbacks, extensions, and
-async I/O are not yet supported. Process-global tracing callbacks are supported
-through `setup` as described below.
+macOS, Windows, cloud sync, aggregate/collation callbacks, loadable extensions,
+and async I/O are not yet supported. Process-global tracing callbacks and
+managed scalar SQL callbacks are supported as described below.
 
 ## Native library requirement
 
@@ -70,6 +70,24 @@ switch (setup_result) {
     },
 }
 ```
+
+## Managed scalar functions
+
+`Connection.registerScalarFunction` installs fixed-arity or variadic callbacks
+with an owned typed context. Runtime callback arguments are invocation-borrowed
+NULL, integer, float, text, or blob values. Turso 0.7.1 loses JSON subtype on
+arguments and cannot deliver a managed ERROR as an argument; the decoder still
+handles both ABI tags defensively. Returned text, JSON, blob, and error messages
+are copied into at most 16 MiB of allocator-owned backing and released after
+Turso copies them.
+
+Callbacks and context deinitializers must not panic or re-enter their owning
+connection or its statements. Reentry is rejected without crossing the C
+boundary and makes an active callback return a managed SQL error. Native
+ownership begins only after successful registration. Before success, the caller
+retains context ownership. After success, replacement, `unregisterFunction`,
+prepared-program release, or connection teardown calls the context
+deinitializer exactly once.
 
 ## Basic use
 

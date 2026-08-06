@@ -19,6 +19,51 @@ fn exec(connection: *turso.Connection, sql: []const u8) !u64 {
     return statement.execute();
 }
 
+const ScalarContext = struct {
+    calls: usize = 0,
+    deinits: *usize,
+    mode: enum { echo, replacement },
+};
+
+fn scalarCall(context: *ScalarContext, args: turso.CallbackArgs) turso.CallbackResult {
+    context.calls += 1;
+    return switch (context.mode) {
+        .replacement => .{ .integer = 99 },
+        .echo => if (args.values.len == 0) .null else switch (args.values[0]) {
+            .null => .null,
+            .integer => |value| .{ .integer = value },
+            .float => |value| .{ .float = value },
+            .text => |value| .{ .text = value },
+            .blob => |value| .{ .blob = value },
+            .managed_error => |value| .{ .managed_error = value },
+        },
+    };
+}
+
+fn scalarDeinit(context: *ScalarContext) void {
+    context.deinits.* += 1;
+}
+
+fn countScalar(_: *void, args: turso.CallbackArgs) turso.CallbackResult {
+    return .{ .integer = @intCast(args.values.len) };
+}
+
+fn textSubtypeScalar(_: *void, args: turso.CallbackArgs) turso.CallbackResult {
+    const subtype = args.values[0].text.subtype;
+    return .{ .integer = @intCast(@intFromEnum(subtype)) };
+}
+
+fn jsonResultScalar(_: *void, _: turso.CallbackArgs) turso.CallbackResult {
+    return .{ .text = .{ .subtype = .json, .bytes = "{\"managed\":true}" } };
+}
+
+fn queryValue(connection: *turso.Connection, sql: []const u8) !turso.Value {
+    var statement = try connection.prepareSingle(sql);
+    defer statement.deinit();
+    try std.testing.expectEqual(turso.Step.row, try statement.step());
+    return statement.value(0);
+}
+
 test "public version accessor reports a compatible Turso SDK Kit version" {
     const runtime_version = try turso.version();
     try std.testing.expect(turso.isAbiCompatibleVersion(runtime_version));
@@ -341,6 +386,335 @@ test "file persistence and early row-loop cleanup" {
         var count = try rows.value(0);
         defer count.deinit(std.testing.allocator);
         try std.testing.expectEqual(@as(i64, 2), count.integer);
+    }
+}
+
+test "managed scalar callbacks cover arity options and every SQL value kind" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+
+    var deinits: usize = 0;
+    try connection.registerScalarFunction(
+        "zig_echo",
+        .{ .fixed = 1 },
+        true,
+        turso.ScalarFunction(ScalarContext){
+            .context = .{ .deinits = &deinits, .mode = .echo },
+            .call = scalarCall,
+            .deinit = scalarDeinit,
+        },
+    );
+
+    const cases = [_]struct { sql: []const u8, expected: turso.Value }{
+        .{ .sql = "SELECT zig_echo(NULL)", .expected = .null },
+        .{ .sql = "SELECT zig_echo(-42)", .expected = .{ .integer = -42 } },
+        .{ .sql = "SELECT zig_echo(1.25)", .expected = .{ .real = 1.25 } },
+        .{ .sql = "SELECT zig_echo('a' || char(0) || 'b')", .expected = .{ .text = @constCast("a\x00b") } },
+        .{ .sql = "SELECT json_type(zig_echo(json('{\"a\":1}')))", .expected = .{ .text = @constCast("object") } },
+        .{ .sql = "SELECT zig_echo(x'0001ff')", .expected = .{ .blob = @constCast(&[_]u8{ 0, 1, 255 }) } },
+        .{ .sql = "SELECT zig_echo('')", .expected = .{ .text = @constCast("") } },
+        .{ .sql = "SELECT zig_echo(x'')", .expected = .{ .blob = @constCast(&[_]u8{}) } },
+    };
+    for (cases) |case| {
+        var actual = try queryValue(&connection, case.sql);
+        defer actual.deinit(std.testing.allocator);
+        switch (case.expected) {
+            .null => try std.testing.expect(actual == .null),
+            .integer => |expected| try std.testing.expectEqual(expected, actual.integer),
+            .real => |expected| try std.testing.expectEqual(expected, actual.real),
+            .text => |expected| try std.testing.expectEqualStrings(expected, actual.text),
+            .blob => |expected| try std.testing.expectEqualSlices(u8, expected, actual.blob),
+        }
+    }
+
+    try connection.registerScalarFunction(
+        "zig_count",
+        .variadic,
+        false,
+        turso.ScalarFunction(ScalarContext){
+            .context = .{ .deinits = &deinits, .mode = .echo },
+            .call = scalarCall,
+            .deinit = scalarDeinit,
+        },
+    );
+    var zero = try queryValue(&connection, "SELECT zig_count()");
+    defer zero.deinit(std.testing.allocator);
+    try std.testing.expect(zero == .null);
+    try connection.unregisterFunction("zig_count");
+    try std.testing.expectEqual(@as(usize, 1), deinits);
+
+    try std.testing.expectError(turso.Error.SqlError, connection.prepareSingle("SELECT zig_echo()"));
+
+    try connection.registerScalarFunction("zig_variadic", .variadic, false, turso.ScalarFunction(void){
+        .context = {},
+        .call = countScalar,
+    });
+    var multi = try queryValue(&connection, "SELECT zig_variadic(1, 2, 3, 4)");
+    defer multi.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 4), multi.integer);
+
+    try connection.registerScalarFunction("zig_high", .{ .fixed = 127 }, false, turso.ScalarFunction(void){
+        .context = {},
+        .call = countScalar,
+    });
+    var sql_buffer: [512]u8 = undefined;
+    var sql_length: usize = 0;
+    const prefix = "SELECT zig_high(";
+    @memcpy(sql_buffer[0..prefix.len], prefix);
+    sql_length += prefix.len;
+    for (0..127) |index| {
+        if (index != 0) {
+            sql_buffer[sql_length] = ',';
+            sql_length += 1;
+        }
+        sql_buffer[sql_length] = '0';
+        sql_length += 1;
+    }
+    sql_buffer[sql_length] = ')';
+    sql_length += 1;
+    var high = try queryValue(&connection, sql_buffer[0..sql_length]);
+    defer high.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 127), high.integer);
+}
+
+const ErrorContext = struct {
+    code: turso.ExtensionResultCode,
+    deinits: *usize,
+};
+
+fn errorScalar(context: *ErrorContext, _: turso.CallbackArgs) turso.CallbackResult {
+    return .{ .managed_error = .{ .code = context.code, .message = "managed failure" } };
+}
+
+fn errorContextDeinit(context: *ErrorContext) void {
+    context.deinits.* += 1;
+}
+
+test "0.7.1 callback inputs lose JSON subtype while managed JSON results retain it" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+
+    try connection.registerScalarFunction("zig_subtype", .{ .fixed = 1 }, false, turso.ScalarFunction(void){
+        .context = {},
+        .call = textSubtypeScalar,
+    });
+    var subtype = try queryValue(&connection, "SELECT zig_subtype(json('{\"a\":1}'))");
+    defer subtype.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, @intFromEnum(turso.ExtensionTextSubtype.text)), subtype.integer);
+
+    try connection.registerScalarFunction("zig_json_result", .{ .fixed = 0 }, false, turso.ScalarFunction(void){
+        .context = {},
+        .call = jsonResultScalar,
+    });
+    var json_kind = try queryValue(&connection, "SELECT json_type(zig_json_result())");
+    defer json_kind.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("object", json_kind.text);
+}
+
+test "managed scalar returns every extension result code without crossing the ABI" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var deinits: usize = 0;
+
+    inline for (@typeInfo(turso.ExtensionResultCode).@"enum".fields, 0..) |field, index| {
+        try connection.registerScalarFunction("zig_error", .{ .fixed = 0 }, false, turso.ScalarFunction(ErrorContext){
+            .context = .{ .code = @enumFromInt(field.value), .deinits = &deinits },
+            .call = errorScalar,
+            .deinit = errorContextDeinit,
+        });
+        if (index != 0) try std.testing.expectEqual(index, deinits);
+        {
+            var statement = try connection.prepareSingle("SELECT zig_error()");
+            defer statement.deinit();
+            try std.testing.expectError(turso.Error.SqlError, statement.step());
+            try std.testing.expectEqualStrings(
+                "Extension error: managed failure",
+                statement.latestDiagnostic() orelse return error.MissingManagedErrorDiagnostic,
+            );
+        }
+    }
+    try connection.unregisterFunction("zig_error");
+    try std.testing.expectEqual(@as(usize, 22), deinits);
+}
+
+test "managed scalar replacement unregister and connection teardown destroy contexts exactly once" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var deinits: usize = 0;
+    {
+        var connection = try database.connect();
+        defer connection.deinit();
+        try connection.registerScalarFunction("zig_life", .{ .fixed = 0 }, true, turso.ScalarFunction(ScalarContext){
+            .context = .{ .deinits = &deinits, .mode = .echo },
+            .call = scalarCall,
+            .deinit = scalarDeinit,
+        });
+        try connection.registerScalarFunction("zig_life", .{ .fixed = 0 }, true, turso.ScalarFunction(ScalarContext){
+            .context = .{ .deinits = &deinits, .mode = .replacement },
+            .call = scalarCall,
+            .deinit = scalarDeinit,
+        });
+        try std.testing.expectEqual(@as(usize, 1), deinits);
+        var value = try queryValue(&connection, "SELECT zig_life()");
+        defer value.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(i64, 99), value.integer);
+    }
+    try std.testing.expectEqual(@as(usize, 2), deinits);
+}
+
+const ReentryContext = struct {
+    connection: *turso.Connection,
+    statement: *?*turso.Statement,
+    callback_rejected: *bool,
+    deinit_rejected: *bool,
+};
+
+fn reentryScalar(context: *ReentryContext, _: turso.CallbackArgs) turso.CallbackResult {
+    _ = context.connection.prepareSingle("SELECT 1") catch |err| {
+        context.callback_rejected.* = err == turso.Error.InvalidState and
+            std.mem.eql(u8, context.connection.latestDiagnostic() orelse "", "scalar callback re-entry is not allowed");
+    };
+    context.connection.setBusyTimeoutMs(0) catch {};
+    _ = context.connection.autocommit();
+    _ = context.connection.lastInsertRowid();
+    context.connection.close() catch {};
+    context.connection.deinit();
+    if (context.statement.*) |statement| {
+        statement.reset() catch {};
+        _ = statement.parameterCount() catch {};
+        _ = statement.changes();
+        statement.deinit();
+    }
+    return .{ .integer = 1 };
+}
+
+fn reentryDeinit(context: *ReentryContext) void {
+    _ = context.connection.prepareSingle("SELECT 1") catch |err| {
+        context.deinit_rejected.* = err == turso.Error.InvalidState;
+        return;
+    };
+}
+
+test "scalar callback and deinitializer reject all owner reentry without native access" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var callback_rejected = false;
+    var deinit_rejected = false;
+    var active_statement: ?*turso.Statement = null;
+
+    try connection.registerScalarFunction("zig_reentry", .{ .fixed = 0 }, false, turso.ScalarFunction(ReentryContext){
+        .context = .{
+            .connection = &connection,
+            .statement = &active_statement,
+            .callback_rejected = &callback_rejected,
+            .deinit_rejected = &deinit_rejected,
+        },
+        .call = reentryScalar,
+        .deinit = reentryDeinit,
+    });
+    var statement = try connection.prepareSingle("SELECT zig_reentry()");
+    active_statement = &statement;
+    try std.testing.expectError(turso.Error.SqlError, statement.step());
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        statement.latestDiagnostic() orelse return error.MissingReentryDiagnostic,
+        "scalar callback re-entry",
+    ) != null);
+    try std.testing.expect(callback_rejected);
+    statement.deinit();
+    active_statement = null;
+    try connection.unregisterFunction("zig_reentry");
+    try std.testing.expect(deinit_rejected);
+    try connection.close();
+}
+
+test "prepared programs delay retired scalar context destruction" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var deinits: usize = 0;
+
+    try connection.registerScalarFunction("zig_prepared", .{ .fixed = 0 }, true, turso.ScalarFunction(ScalarContext){
+        .context = .{ .deinits = &deinits, .mode = .echo },
+        .call = scalarCall,
+        .deinit = scalarDeinit,
+    });
+    var prepared = try connection.prepareSingle("SELECT zig_prepared()");
+    try connection.registerScalarFunction("zig_prepared", .{ .fixed = 0 }, true, turso.ScalarFunction(ScalarContext){
+        .context = .{ .deinits = &deinits, .mode = .replacement },
+        .call = scalarCall,
+        .deinit = scalarDeinit,
+    });
+    try std.testing.expectEqual(@as(usize, 0), deinits);
+    prepared.deinit();
+    try std.testing.expectEqual(@as(usize, 1), deinits);
+    try connection.unregisterFunction("zig_prepared");
+    try std.testing.expectEqual(@as(usize, 2), deinits);
+}
+
+test "managed scalar validates names and arities before taking ownership" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var deinits: usize = 0;
+    const function = turso.ScalarFunction(ScalarContext){
+        .context = .{ .deinits = &deinits, .mode = .echo },
+        .call = scalarCall,
+        .deinit = scalarDeinit,
+    };
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerScalarFunction("", .variadic, false, function));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerScalarFunction("bad\x00name", .variadic, false, function));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerScalarFunction("bad\xff", .variadic, false, function));
+    try std.testing.expectError(turso.Error.InvalidArgument, connection.registerScalarFunction("too_many", .{ .fixed = 128 }, false, function));
+    try std.testing.expectEqual(@as(usize, 0), deinits);
+}
+
+test "pre-native scalar registration allocation failure leaves context with caller" {
+    var database = try openDatabase(":memory:");
+    defer database.deinit();
+    try database.open();
+    var connection = try database.connect();
+    defer connection.deinit();
+    var deinits: usize = 0;
+    var function = turso.ScalarFunction(ScalarContext){
+        .context = .{ .deinits = &deinits, .mode = .echo },
+        .call = scalarCall,
+        .deinit = scalarDeinit,
+    };
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    connection.allocator = failing.allocator();
+    try std.testing.expectError(
+        turso.Error.OutOfMemory,
+        connection.registerScalarFunction("zig_allocation_failure", .{ .fixed = 0 }, false, function),
+    );
+    connection.allocator = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 0), deinits);
+    scalarDeinit(&function.context);
+    try std.testing.expectEqual(@as(usize, 1), deinits);
+}
+
+test "extension result codes and text subtypes are exhaustive" {
+    try std.testing.expectEqual(@as(usize, 22), @typeInfo(turso.ExtensionResultCode).@"enum".fields.len);
+    try std.testing.expectEqual(@as(usize, 2), @typeInfo(turso.ExtensionTextSubtype).@"enum".fields.len);
+    inline for (@typeInfo(turso.ExtensionResultCode).@"enum".fields, 0..) |field, expected| {
+        try std.testing.expectEqual(expected, field.value);
     }
 }
 
