@@ -4,12 +4,13 @@ An early synchronous Zig 0.16.0 SDK for Turso embedded/local databases. The
 implemented API exposes the runtime version and process-global tracing setup,
 opens local databases, prepares statements, binds positional values, executes
 SQL, streams rows, copies typed values, exposes metadata and transaction state,
-registers managed scalar and aggregate functions, and retains native diagnostics.
+registers managed scalar and aggregate functions and collations, and retains
+native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
-macOS, Windows, cloud sync, collation callbacks, loadable extensions, and async
-I/O are not yet supported. Process-global tracing callbacks and managed
-scalar/aggregate SQL callbacks are supported as described below.
+macOS, Windows, cloud sync, loadable extensions, and async I/O are not yet
+supported. Process-global tracing callbacks and managed scalar, aggregate, and
+collation SQL callbacks are supported as described below.
 
 ## Native library requirement
 
@@ -111,6 +112,28 @@ Exhausting the retained-state bound returns a managed out-of-range error before
 state initialization or allocation.
 Aggregate callbacks and both deinitializers share the same non-reentry and
 non-panicking contract as scalar callbacks.
+
+## Managed collations
+
+The public `Collation(Context)` export defines a typed context, comparison
+callback, and optional context deinitializer. `Connection.registerCollation`
+installs or replaces a named collation for that connection;
+`Connection.unregisterCollation` removes it and succeeds when the name is
+absent. Native ownership begins only after successful registration. Replacement,
+unregistration, or connection teardown invokes the context deinitializer
+exactly once.
+
+Comparison inputs are invocation-borrowed UTF-8 slices. Comparison callbacks
+and context deinitializers must not panic or re-enter the owning connection or
+any of its statements. Reentry is rejected before another native call; getter
+paths return their documented neutral sentinel and record the violation.
+Registration, replacement, and unregistration return `InvalidState` while any
+statement exists on the connection, so native cannot retain a retired context.
+
+Managed collations are verified for expression comparison and explicit
+`ORDER BY ... COLLATE` sorting. Schema declarations, indexes, uniqueness
+constraints, and persisted schema behavior using managed collation names are
+not supported or claimed by this contract.
 
 ## Basic use
 

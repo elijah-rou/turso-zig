@@ -8,8 +8,10 @@ The implemented synchronous SDK is split at ownership boundaries:
 - `setup.zig`: safe version access, owned setup failures, and the synchronized process-global logger trampoline.
 - `value.zig`: `Value`, whose text/blob variants own allocator-copied bytes.
 - `callback_value.zig`: exhaustive borrowed callback values and bounded, owned result encoding.
+- `aggregate_function.zig`: bounded per-group state and managed aggregate callback trampolines.
+- `collation.zig`: managed collation contexts and validated, call-scoped UTF-8 comparison inputs.
 - `database.zig`: copied configuration, create/open/connect/deinit, construction failures, and database diagnostics.
-- `connection.zig`: prepare, managed scalar registration policy, busy timeout, transaction state, close/deinit, and connection diagnostics.
+- `connection.zig`: prepare, managed callback registration policy, busy timeout, transaction state, close/deinit, and connection diagnostics.
 - `statement.zig`: positional binding, execute/step/reset/finalize, copied values and metadata, and statement diagnostics.
 
 `Database`, `Connection`, and `Statement` own opaque native handles. They are
@@ -32,13 +34,18 @@ none when no callback exists. Loggers must be thread-safe and non-panicking;
 they must not call `setup`, which rejects logger-callback reentry with
 `InvalidState`.
 
-Managed scalar callback contexts transfer to native ownership only after raw
-`TURSO_OK`; failed registration leaves context cleanup with the caller. Result
-destructors release nested package allocations, never Turso's stack result
-pointer. Callback and context-deinit execution blocks native re-entry through
-the owning connection and all of its statements. Turso 0.7.1 callback arguments
-lose JSON subtype and never carry managed ERROR values; decoding those ABI tags
-remains defensive source-level coverage.
+Managed scalar, aggregate, and collation contexts transfer to native ownership
+only after raw `TURSO_OK`; failed registration leaves context cleanup with the
+caller. Result destructors release nested package allocations, never Turso's
+stack result pointer. Callback and context-deinit execution blocks native
+re-entry through the owning connection and all of its statements. Callback
+tables cannot be mutated while any statement exists because prepared programs
+may retain native registrations. Collation inputs are validated UTF-8 slices
+borrowed only for the comparison call; boundary-invalid inputs compare equal
+without invoking user code. Turso 0.7.1 callback arguments lose JSON subtype
+and never carry managed ERROR values; decoding those ABI tags remains defensive
+source-level coverage.
 
-Cloud sync, aggregate and collation callbacks, loadable extensions, and async
-I/O are outside the implemented v0 surface.
+Managed collations are verified for expression comparison and sorting only.
+The wrapper does not claim schema or index support. Cloud sync, loadable
+extensions, and async I/O are outside the implemented v0 surface.

@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @import("c_api.zig").raw;
 const aggregate_function = @import("aggregate_function.zig");
 const callback_value = @import("callback_value.zig");
+const collation = @import("collation.zig");
 const errors = @import("error.zig");
 const ownership = @import("ownership.zig");
 const Statement = @import("statement.zig").Statement;
@@ -250,6 +251,65 @@ pub const Connection = struct {
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
     }
 
+    /// Registers or replaces a per-connection collation. The context transfers
+    /// to native ownership only when the raw registration returns `TURSO_OK`.
+    pub fn registerCollation(self: *Connection, name: []const u8, value: anytype) errors.Error!void {
+        const Value = @TypeOf(value);
+        const value_info = @typeInfo(Value);
+        if (comptime value_info != .@"struct" or !@hasField(Value, "context") or
+            !@hasField(Value, "compare") or !@hasField(Value, "deinit"))
+        {
+            @compileError("value must be a turso.Collation(Context)");
+        }
+        const Context = @TypeOf(value.context);
+        if (comptime Value != collation.Collation(Context)) {
+            @compileError("value must be a turso.Collation(Context)");
+        }
+
+        const handle = try self.beginOperation();
+        try self.rejectActiveCollationMutation();
+        try self.validateCollationName(name);
+        const name_z = self.allocator.dupeZ(u8, name) catch return errors.Error.OutOfMemory;
+        defer self.allocator.free(name_z);
+
+        const Box = collation.Box(Context);
+        const box = self.allocator.create(Box) catch return errors.Error.OutOfMemory;
+        box.* = .{
+            .allocator = self.allocator,
+            .owner_state = self.owner_state,
+            .collation = value,
+        };
+        var transferred = false;
+        defer if (!transferred) self.allocator.destroy(box);
+
+        var error_opt_out: [*c]const u8 = null;
+        const status = c.turso_connection_register_collation(
+            handle,
+            name_z.ptr,
+            @intFromPtr(box),
+            collation.compareTrampoline(Context),
+            collation.contextDestructor(Context),
+            &error_opt_out,
+        );
+        transferred = registrationTransfersOwnership(status);
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
+        try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
+    }
+
+    /// Unregisters a per-connection collation. An absent name is successful.
+    pub fn unregisterCollation(self: *Connection, name: []const u8) errors.Error!void {
+        const handle = try self.beginOperation();
+        try self.rejectActiveCollationMutation();
+        try self.validateCollationName(name);
+        const name_z = self.allocator.dupeZ(u8, name) catch return errors.Error.OutOfMemory;
+        defer self.allocator.free(name_z);
+
+        var error_opt_out: [*c]const u8 = null;
+        const status = c.turso_connection_unregister_collation(handle, name_z.ptr, &error_opt_out);
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
+        try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
+    }
+
     pub fn setBusyTimeoutMs(self: *Connection, timeout_ms: u64) errors.Error!void {
         const handle = try self.beginOperation();
         const signed_timeout = std.math.cast(i64, timeout_ms) orelse {
@@ -362,6 +422,21 @@ pub const Connection = struct {
             !std.unicode.utf8ValidateSlice(name))
         {
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "function name must be 1..255 UTF-8 bytes without NUL");
+            return errors.Error.InvalidArgument;
+        }
+    }
+
+    fn rejectActiveCollationMutation(self: *Connection) errors.Error!void {
+        if (self.owner_state.active_statements == 0) return;
+        try errors.setDiagnostic(self.allocator, &self.diagnostic, "collation table cannot be mutated while statements are active");
+        return errors.Error.InvalidState;
+    }
+
+    fn validateCollationName(self: *Connection, name: []const u8) errors.Error!void {
+        if (name.len == 0 or name.len > 255 or std.mem.indexOfScalar(u8, name, 0) != null or
+            !std.unicode.utf8ValidateSlice(name))
+        {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "collation name must be 1..255 UTF-8 bytes without NUL");
             return errors.Error.InvalidArgument;
         }
     }
