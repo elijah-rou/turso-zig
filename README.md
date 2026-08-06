@@ -7,8 +7,9 @@ SQL, streams rows, copies typed values, exposes metadata and transaction state,
 and retains native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
-macOS, Windows, cloud sync, callbacks, extensions, and async I/O are not yet
-supported.
+macOS, Windows, cloud sync, SQL function/collation callbacks, extensions, and
+async I/O are not yet supported. Process-global tracing callbacks are supported
+through `setup` as described below.
 
 ## Native library requirement
 
