@@ -7,14 +7,9 @@ SQL, streams rows, copies typed values, exposes metadata and transaction state,
 registers managed scalar functions, and retains native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
-<<<<<<< HEAD
-macOS, Windows, cloud sync, SQL function/collation callbacks, extensions, and
-async I/O are not yet supported. Process-global tracing callbacks are supported
-through `setup` as described below.
-=======
 macOS, Windows, cloud sync, aggregate/collation callbacks, loadable extensions,
-and async I/O are not yet supported.
->>>>>>> 59ae294 (feat: add safe managed scalar callbacks)
+and async I/O are not yet supported. Process-global tracing callbacks and
+managed scalar SQL callbacks are supported as described below.
 
 ## Native library requirement
 
