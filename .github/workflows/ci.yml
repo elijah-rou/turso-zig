@@ -14,19 +14,66 @@ concurrency:
 
 jobs:
   validate:
-    name: Zig 0.16.0
+    name: Ubuntu / Zig 0.16.0 / Turso 0.7.1
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Obtain Turso v0.7.1 source
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/turso-v0.7.1"
+          timeout 2m git clone --branch v0.7.1 --depth 1 \
+            https://github.com/tursodatabase/turso.git "$source_dir"
+          test "$(git -C "$source_dir" describe --tags --exact-match)" = "v0.7.1"
+          test "$(git -C "$source_dir" rev-parse HEAD)" = \
+            "4a88feb7caef869c16f6215b6dc51eafd5b3e54e"
+          cmp vendor/turso-sdk-kit-0.7.1/turso.h "$source_dir/sdk-kit/turso.h"
+          echo "TURSO_SOURCE=$source_dir" >> "$GITHUB_ENV"
+          echo "TURSO_LIB_DIR=$source_dir/target/release" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$source_dir/target/release" >> "$GITHUB_ENV"
+
+      - name: Build Turso SDK Kit 0.7.1
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 14m cargo build \
+            --locked \
+            --release \
+            --package turso_sdk_kit \
+            --manifest-path "$TURSO_SOURCE/Cargo.toml"
+          test -f "$TURSO_LIB_DIR/libturso_sdk_kit.so"
+
       - name: Check formatting
-        run: zig fmt --check build.zig
-      - name: Build
-        run: zig build
+        run: zig fmt --check build.zig src tests examples
+
+      - name: Run SDK tests
+        run: >-
+          zig build test
+          -Dturso-lib-dir="$TURSO_LIB_DIR"
+          -Dturso-linkage=dynamic
+
       - name: Check whitespace
-        run: git diff --check
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"
+          else
+            git diff --check "$GITHUB_SHA^1..$GITHUB_SHA"
+          fi

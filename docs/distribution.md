@@ -1,23 +1,33 @@
 # Native-library distribution
 
-The Zig package is a safe API layer over a native Turso library. It cannot be
-useful to consumers until the package can locate a compatible header and
-library for their target. Decide this before committing to the public API.
+The Zig package is a safe API layer over a native Turso library. v0 vendors the
+Turso 0.7.1 header and requires consumers to supply the matching library for
+their target explicitly.
 
 ## Recommended rollout
 
 ### Phase 1: caller-supplied native library
 
-Document a `build.zig` integration point that lets an application provide:
+The package vendors `turso.h` from Turso v0.7.1 and requires callers to
+provide a directory containing the matching native library:
 
-- a path containing `turso.h` from `sdk-kit/`;
-- a static or shared Turso library built for the application's target; and
-- any platform system libraries that the Turso artifact requires.
+```bash
+zig build test \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/lib \
+  -Dturso-linkage=dynamic
+```
+
+`-Dturso-lib-dir` is required. `-Dturso-linkage` accepts only `dynamic` or
+`static` and defaults to `dynamic`. Dynamic linking is the first exercised
+mode. Static mode is parsed and selects the static artifact, but callers remain
+responsible for its platform system-library requirements. The build uses only
+the supplied directory, does not fall back to `pkg-config` or an arbitrary
+system Turso library, and never invokes Cargo implicitly.
 
 This keeps the first Zig package small and makes ABI compatibility visible. It
-is appropriate for SDK development and CI. The package build should fail with a
-clear error when the consumer has not supplied a library rather than silently
-linking an arbitrary system library.
+is appropriate for SDK development and CI. Package discovery (`zig build --help`)
+and the artifact-free default step do not require the option; every compile or
+run step fails unless the native-library directory is supplied.
 
 ### Phase 2: published, pinned platform artifacts
 
