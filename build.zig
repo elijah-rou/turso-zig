@@ -61,17 +61,10 @@ pub fn build(b: *std.Build) void {
     });
     internal_tests_module.addIncludePath(b.path("vendor/turso-sdk-kit-0.7.1"));
     internal_tests_module.link_libc = true;
-    internal_tests_module.addLibraryPath(turso_lib_dir);
-    internal_tests_module.linkSystemLibrary("turso_sdk_kit", .{
-        .use_pkg_config = .no,
-        .preferred_link_mode = switch (turso_linkage) {
-            .dynamic => .dynamic,
-            .static => .static,
-        },
-        .search_strategy = .no_fallback,
-    });
+    internal_tests_module.addObjectFile(tursoLibraryPath(b, target.result, turso_lib_dir, turso_linkage));
     if (turso_linkage == .dynamic) internal_tests_module.addRPath(turso_lib_dir);
     const internal_tests = b.addTest(.{ .root_module = internal_tests_module });
+    if (missing_turso_lib_dir) |failure| internal_tests.step.dependOn(&failure.step);
     const run_internal_tests = b.addRunArtifact(internal_tests);
     test_step.dependOn(&run_internal_tests.step);
 

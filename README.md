@@ -96,13 +96,12 @@ with `.caller_driven`, then use `openProgress`, `executeProgress`,
 `stepProgress`, `finalizeProgress`, and one-step `runIo`. Progress methods never
 loop: an operation returning `.needs_io` must be followed by exactly one
 successful `runIo`, then a retry of that same operation. `runIo` returning
-success does not mean the SQL operation is done. `reset` and `deinit` do not
-abort pending native work. In caller-driven mode, complete each pending
-`runIo`/same-operation retry sequence before `reset` or `deinit`; use
-`finalizeProgress` as the explicit quiescence route. Pending `reset` is rejected
-before native access, and pending `deinit` is programmer misuse that fails loud
-before native access. A statement operation invalidates the current row even
-when it is rejected or reports `.needs_io`.
+success does not mean the SQL operation is done. `reset` and `deinit` are the
+explicit cancellation/teardown routes for pending native work. Unlike progress
+methods, Turso 0.7.1 cleanup may synchronously drain pending I/O before aborting;
+`reset` clears wrapper progress only after native success, while `deinit` always
+releases the native statement and sidecar. A statement operation invalidates the
+current row even when it is rejected or reports `.needs_io`.
 
 Caller-driven construction accepts only the source-proven default, `memory`,
 or `syscall` VFS selection. It rejects `io_uring`,

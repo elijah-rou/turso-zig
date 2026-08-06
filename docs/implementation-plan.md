@@ -202,11 +202,11 @@ and database-open states before fallible diagnostic handling. Do not map
 Pinned library-driven operations and native reset/drop internals may drain I/O
 in loops.
 
-Caller-driven `reset` rejects an awaiting-I/O or retry-required operation before
-native access. `deinit` requires the statement to be quiescent and fails loud on
-pending programmer misuse before native access. Neither operation aborts pending
-native work. Complete the `runIo`/same-operation retry sequence, preferably
-through `finalizeProgress`, before cleanup.
+Caller-driven `reset` and `deinit` are explicit cancellation/teardown routes
+for awaiting-I/O and retry-required operations. Native reset/drop internals may
+synchronously drain I/O while aborting, so only the progress methods guarantee
+one native iteration per call. `reset` clears sidecar progress after native
+success; `deinit` always removes and frees the sidecar after native teardown.
 
 The 0.7.1 C ABI has no database I/O driver even though `turso_database_open`
 can return `TURSO_IO`. Restrict caller-driven configurations to default,

@@ -251,10 +251,6 @@ pub const Statement = struct {
 
     pub fn reset(self: *Statement) errors.Error!void {
         const handle = try self.beginMutationAllowFinalized();
-        if (!self.progressState().isQuiescent()) {
-            try errors.setDiagnostic(self.allocator, &self.diagnostic, "pending statement operation must be completed before reset");
-            return errors.Error.InvalidState;
-        }
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_statement_reset(handle, &error_opt_out);
         recordResetStatus(self.progressState(), &self.finalized, status);
@@ -397,7 +393,6 @@ pub const Statement = struct {
             return;
         };
         std.debug.assert(self.connection_owner_state.active_statements > 0);
-        if (self.io_mode == .caller_driven) std.debug.assert(self.progressState().isQuiescent());
         c.turso_statement_deinit(handle);
         const registration = self.connection_owner_state.removeStatementProgressRecord(@intFromPtr(handle));
         const record: *ProgressRecord = @fieldParentPtr("registration", registration);
@@ -578,7 +573,6 @@ fn recordFinalizeNativeStatus(state: *ProgressState, finalized: *bool, status: c
 
 fn recordResetStatus(state: *ProgressState, finalized: *bool, status: c.turso_status_code_t) void {
     if (status != c.TURSO_OK) return;
-    std.debug.assert(state.isQuiescent());
     state.* = .{};
     finalized.* = false;
 }
@@ -671,9 +665,11 @@ test "statement progress sidecar registration is exact and allocation failure is
 
 test "reset changes wrapper state only after native success" {
     var state: ProgressState = .{};
+    state.recordIoRequired(.step);
     var finalized = true;
     recordResetStatus(&state, &finalized, c.TURSO_IOERR);
     try std.testing.expect(finalized);
+    try std.testing.expect(!state.isQuiescent());
     recordResetStatus(&state, &finalized, c.TURSO_OK);
     try std.testing.expect(!finalized);
     try std.testing.expect(state.isQuiescent());
