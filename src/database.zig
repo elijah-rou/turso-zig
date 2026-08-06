@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("c_api.zig").raw;
 const errors = @import("error.zig");
+const ownership = @import("ownership.zig");
 const Connection = @import("connection.zig").Connection;
 
 pub const DatabaseConfig = struct {
@@ -34,7 +35,7 @@ pub const Database = struct {
     handle: ?*const c.turso_database_t,
     stored_config: StoredConfig,
     diagnostic: ?[]u8 = null,
-    active_connections: usize = 0,
+    owner_state: *ownership.DatabaseState,
     opened: bool = false,
 
     pub fn create(allocator: std.mem.Allocator, config: DatabaseConfig) std.mem.Allocator.Error!InitResult {
@@ -75,13 +76,11 @@ pub const Database = struct {
         }
 
         if (copied) |unexpected| {
-            allocator.free(unexpected);
-            std.debug.assert(false);
-            const diagnostic = try allocator.dupe(u8, "successful database construction returned a diagnostic");
+            if (handle) |unexpected_handle| c.turso_database_deinit(unexpected_handle);
             stored_config.deinit(allocator);
             return .{ .failure = .{
                 .category = errors.Error.UnexpectedDiagnostic,
-                .diagnostic = diagnostic,
+                .diagnostic = unexpected,
             } };
         }
         const valid_handle = handle orelse {
@@ -92,34 +91,56 @@ pub const Database = struct {
                 .diagnostic = diagnostic,
             } };
         };
+        const owner_state = allocator.create(ownership.DatabaseState) catch {
+            c.turso_database_deinit(valid_handle);
+            return error.OutOfMemory;
+        };
+        owner_state.* = .{};
 
         return .{ .success = .{
             .allocator = allocator,
             .handle = valid_handle,
             .stored_config = stored_config,
+            .owner_state = owner_state,
         } };
     }
 
     pub fn latestDiagnostic(self: *const Database) ?[]const u8 {
+        std.debug.assert(self.handle != null);
         return self.diagnostic;
     }
 
     pub fn activeConnectionCount(self: *const Database) usize {
-        return self.active_connections;
+        const handle = self.handle orelse {
+            std.debug.assert(false);
+            return 0;
+        };
+        _ = handle;
+        return self.owner_state.active_connections;
     }
 
     pub fn open(self: *Database) errors.Error!void {
-        const handle = self.handle orelse return errors.Error.InvalidState;
+        const handle = self.handle orelse {
+            std.debug.assert(false);
+            return errors.Error.InvalidState;
+        };
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
+        if (self.opened) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "database is already open");
+            return errors.Error.InvalidState;
+        }
 
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_database_open(handle, &error_opt_out);
+        if (status == c.TURSO_OK) self.opened = true;
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
-        self.opened = true;
     }
 
     pub fn connect(self: *Database) errors.Error!Connection {
-        const handle = self.handle orelse return errors.Error.InvalidState;
+        const handle = self.handle orelse {
+            std.debug.assert(false);
+            return errors.Error.InvalidState;
+        };
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         if (!self.opened) {
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "database must be opened before connecting");
@@ -129,23 +150,22 @@ pub const Database = struct {
         var connection_handle: ?*c.turso_connection_t = null;
         var error_opt_out: [*c]const u8 = null;
         const status = c.turso_database_connect(handle, &connection_handle, &error_opt_out);
-        if (status != c.TURSO_OK) {
-            if (connection_handle) |unexpected_handle| {
-                c.turso_connection_deinit(unexpected_handle);
-                connection_handle = null;
-            }
-        }
+        errdefer if (connection_handle) |unowned_handle| c.turso_connection_deinit(unowned_handle);
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
         const valid_handle = connection_handle orelse {
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "successful database connect returned a null handle");
             return errors.Error.InvalidHandle;
         };
+        const owner_state = self.allocator.create(ownership.ConnectionState) catch return errors.Error.OutOfMemory;
+        errdefer self.allocator.destroy(owner_state);
+        owner_state.* = .{};
 
-        self.active_connections += 1;
+        self.owner_state.active_connections += 1;
         return .{
             .allocator = self.allocator,
             .handle = valid_handle,
-            .database_active_connections = &self.active_connections,
+            .database_owner_state = self.owner_state,
+            .owner_state = owner_state,
         };
     }
 
@@ -154,12 +174,13 @@ pub const Database = struct {
             std.debug.assert(false);
             return;
         };
-        std.debug.assert(self.active_connections == 0);
+        std.debug.assert(self.owner_state.active_connections == 0);
 
         c.turso_database_deinit(handle);
         self.handle = null;
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         self.stored_config.deinit(self.allocator);
+        self.allocator.destroy(self.owner_state);
         self.opened = false;
     }
 };
