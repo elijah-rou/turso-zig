@@ -520,7 +520,7 @@ fn ScalarBox(comptime Context: type) type {
     };
 }
 
-fn scalarTrampoline(comptime Context: type) c.turso_scalar_function_t {
+pub fn scalarTrampoline(comptime Context: type) c.turso_scalar_function_t {
     return struct {
         fn call(
             opaque_context: usize,
@@ -590,7 +590,7 @@ test "scalar context destructor restores guard and destroys active box exactly o
     try std.testing.expect(owner_state.callback_violation);
 }
 
-fn scalarContextDestructor(comptime Context: type) c.turso_context_destructor_t {
+pub fn scalarContextDestructor(comptime Context: type) c.turso_context_destructor_t {
     return struct {
         fn destroy(opaque_context: usize) callconv(.c) void {
             if (opaque_context == 0) return;

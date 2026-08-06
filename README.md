@@ -7,7 +7,9 @@ opens local databases, prepares statements, binds positional values, executes
 SQL, streams rows, copies typed values, exposes metadata and transaction state,
 registers managed scalar and aggregate functions and collations, controls SQL
 extension loading, exposes an explicitly unsafe native-extension trust boundary,
-and retains native diagnostics.
+and retains native diagnostics. The safe adapter has complete declaration parity with the vendored SDK Kit 0.7.1 ABI: all 48 public C functions and 27 public typedefs are machine-classified, compile-referenced, and documented with no silently raw-only callable functionality. The separate `turso.c` namespace remains unstable and unsafe; parity classification does not make direct raw calls memory-safe.
+
+See [`docs/abi-parity.md`](docs/abi-parity.md) for the generated/validated manifest. The principal adapters are managed scalar/aggregate/collation callbacks, prepare-first-backed `prepareSingle`, copied values/metadata/diagnostics, explicit statement progress including `runIo`, and the `loadExtensionUnsafe` trust boundary. The two public limitations are the missing database-open I/O driver tracked by [tursodatabase/turso#8043](https://github.com/tursodatabase/turso/issues/8043) and the impossibility of making arbitrary loaded native extension code memory-safe.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
 Loadable extensions are qualified only on that Linux dynamic path. macOS,
@@ -24,6 +26,9 @@ pre-release library is not ABI-compatible merely because it links.
 Every compile or run command requires an absolute library directory:
 
 ```bash
+zig build abi-parity \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
+  -Dturso-linkage=dynamic
 zig build test \
   -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
   -Dturso-linkage=dynamic
@@ -43,7 +48,7 @@ git diff --check
 Ubuntu. Static selection is implemented, but its Rust and platform system
 library closure is not enumerated or supported yet. `build.zig` never invokes
 Cargo, falls back to `pkg-config`, or searches for an arbitrary system Turso
-library. Tests and the example reject a runtime version outside the 0.7.1 ABI
+library. Tests and the basic example reject a runtime version outside the 0.7.1 ABI
 version family (`0.7.1`, `0.7.1-*`, or `0.7.1+*`).
 
 ## Native extension controls
@@ -155,7 +160,7 @@ are copied into at most 16 MiB of allocator-owned backing and released after
 Turso copies them.
 
 Callbacks and context deinitializers must not panic or re-enter their owning
-connection or its statements. Reentry is rejected without crossing the C
+connection or its statements. A panic cannot unwind across the C callback boundary and is programmer error; callbacks must convert expected failures into `CallbackResult.managed_error`. Reentry is rejected without crossing the C
 boundary and makes an active callback return a managed SQL error. Native ownership begins only after successful registration. Before success, the
 caller retains context ownership. Because Turso 0.7.1 prepared programs copy
 function entries without retaining their registration ownership, every scalar

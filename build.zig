@@ -37,9 +37,30 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     module.addIncludePath(b.path("vendor/turso-sdk-kit-0.7.1"));
+    module.addAnonymousImport("abi-parity-doc", .{
+        .root_source_file = b.path("docs/abi-parity.md"),
+    });
     module.link_libc = true;
     module.addObjectFile(tursoLibraryPath(b, target.result, turso_lib_dir, turso_linkage));
     if (turso_linkage == .dynamic) module.addRPath(turso_lib_dir);
+
+    const abi_parity_module = b.createModule(.{
+        .root_source_file = b.path("src/abi_parity.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    abi_parity_module.addIncludePath(b.path("vendor/turso-sdk-kit-0.7.1"));
+    abi_parity_module.addAnonymousImport("abi-parity-doc", .{
+        .root_source_file = b.path("docs/abi-parity.md"),
+    });
+    abi_parity_module.link_libc = true;
+    abi_parity_module.addObjectFile(tursoLibraryPath(b, target.result, turso_lib_dir, turso_linkage));
+    if (turso_linkage == .dynamic) abi_parity_module.addRPath(turso_lib_dir);
+    const abi_parity_tests = b.addTest(.{ .root_module = abi_parity_module });
+    if (missing_turso_lib_dir) |failure| abi_parity_tests.step.dependOn(&failure.step);
+    const run_abi_parity_tests = b.addRunArtifact(abi_parity_tests);
+    const abi_parity_step = b.step("abi-parity", "Audit complete Turso SDK Kit 0.7.1 ABI parity");
+    abi_parity_step.dependOn(&run_abi_parity_tests.step);
 
     const tests_module = b.createModule(.{
         .root_source_file = b.path("tests/sdk_test.zig"),
@@ -60,6 +81,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     internal_tests_module.addIncludePath(b.path("vendor/turso-sdk-kit-0.7.1"));
+    internal_tests_module.addAnonymousImport("abi-parity-doc", .{
+        .root_source_file = b.path("docs/abi-parity.md"),
+    });
     internal_tests_module.link_libc = true;
     internal_tests_module.addObjectFile(tursoLibraryPath(b, target.result, turso_lib_dir, turso_linkage));
     if (turso_linkage == .dynamic) internal_tests_module.addRPath(turso_lib_dir);
@@ -135,8 +159,21 @@ pub fn build(b: *std.Build) void {
         .root_module = example_module,
     });
     const run_example = b.addRunArtifact(example);
-    const example_step = b.step("run-example", "Run the basic synchronous SDK example");
+    const parity_example_module = b.createModule(.{
+        .root_source_file = b.path("examples/parity.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    parity_example_module.addImport("turso", module);
+    const parity_example = b.addExecutable(.{
+        .name = "turso-parity-example",
+        .root_module = parity_example_module,
+    });
+    const run_parity_example = b.addRunArtifact(parity_example);
+
+    const example_step = b.step("run-example", "Run synchronous, managed-callback, and progress examples");
     example_step.dependOn(&run_example.step);
+    example_step.dependOn(&run_parity_example.step);
 }
 
 fn tursoLibraryPath(

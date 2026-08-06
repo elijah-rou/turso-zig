@@ -76,6 +76,12 @@ jobs:
       - name: Check formatting
         run: zig fmt --check build.zig src tests examples
 
+      - name: Audit ABI parity
+        run: >-
+          zig build abi-parity
+          -Dturso-lib-dir="$TURSO_LIB_DIR"
+          -Dturso-linkage=dynamic
+
       - name: Run SDK tests
         run: >-
           zig build test
@@ -83,7 +89,7 @@ jobs:
           -Dturso-linkage=dynamic
           -Dturso-extension-path="$TURSO_EXTENSION_PATH"
 
-      - name: Run basic example
+      - name: Run both examples
         run: >-
           zig build run-example
           -Dturso-lib-dir="$TURSO_LIB_DIR"

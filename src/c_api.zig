@@ -1,10 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const raw = @cImport({
     @cInclude("turso.h");
 });
 
-comptime {
+pub fn validateAbi() void {
     assertConstant("TURSO_OK", raw.TURSO_OK, 0);
     assertConstant("TURSO_DONE", raw.TURSO_DONE, 1);
     assertConstant("TURSO_ROW", raw.TURSO_ROW, 2);
@@ -67,27 +68,43 @@ comptime {
     assertConstant("TURSO_EXTENSION_TEXT_TEXT", raw.TURSO_EXTENSION_TEXT_TEXT, 0);
     assertConstant("TURSO_EXTENSION_TEXT_JSON", raw.TURSO_EXTENSION_TEXT_JSON, 1);
 
-    if (@offsetOf(raw.turso_value_t, "value_type") != 0 or
-        @offsetOf(raw.turso_value_t, "value") < @sizeOf(raw.turso_extension_value_type_t) or
-        @sizeOf(raw.turso_extension_value_data_t) != 8 or
-        @sizeOf(raw.turso_value_t) != 16)
+    const ExpectedValue = extern struct {
+        value_type: raw.turso_extension_value_type_t,
+        value: raw.turso_extension_value_data_t,
+    };
+    if (@sizeOf(ExpectedValue) != @sizeOf(raw.turso_value_t) or
+        @alignOf(ExpectedValue) != @alignOf(raw.turso_value_t) or
+        @offsetOf(ExpectedValue, "value_type") != @offsetOf(raw.turso_value_t, "value_type") or
+        @offsetOf(ExpectedValue, "value") != @offsetOf(raw.turso_value_t, "value"))
     {
         @compileError("Turso SDK Kit 0.7.1 callback value layout mismatch");
     }
-    const scalar_pointer = @typeInfo(raw.turso_scalar_function_t).optional.child;
-    const scalar_signature = @typeInfo(@typeInfo(scalar_pointer).pointer.child).@"fn";
-    if (@sizeOf(raw.turso_context_destructor_t) != @sizeOf(?*const anyopaque) or
-        @sizeOf(raw.turso_value_destructor_t) != @sizeOf(?*const anyopaque) or
-        scalar_signature.params.len != 5 or
-        @sizeOf(scalar_signature.params[0].type.?) != @sizeOf(usize) or
-        @sizeOf(scalar_signature.params[1].type.?) != @sizeOf(c_int) or
-        @sizeOf(scalar_signature.params[2].type.?) != @sizeOf([*c]const raw.turso_value_t) or
-        @sizeOf(scalar_signature.params[3].type.?) != @sizeOf(raw.turso_context_destructor_t) or
-        @sizeOf(scalar_signature.params[4].type.?) != @sizeOf(raw.turso_value_destructor_t) or
-        scalar_signature.return_type.? != raw.turso_value_t)
-    {
-        @compileError("Turso SDK Kit 0.7.1 callback signature mismatch");
+    if (builtin.target.cpu.arch == .x86_64 and builtin.target.os.tag == .linux) {
+        if (@sizeOf(usize) != 8 or
+            @sizeOf(raw.turso_slice_ref_t) != 16 or
+            @offsetOf(raw.turso_slice_ref_t, "len") != 8 or
+            @offsetOf(raw.turso_database_config_t, "async_io") != 0 or
+            @offsetOf(raw.turso_database_config_t, "path") != 8 or
+            @offsetOf(raw.turso_extension_text_t, "subtype") != 0 or
+            @offsetOf(raw.turso_extension_text_t, "text") != 8 or
+            @offsetOf(raw.turso_extension_text_t, "len") != 16 or
+            @sizeOf(raw.turso_extension_value_data_t) != 8 or
+            @offsetOf(raw.turso_value_t, "value") != 8 or
+            @sizeOf(raw.turso_value_t) != 16)
+        {
+            @compileError("Turso SDK Kit 0.7.1 Linux x86_64 layout mismatch");
+        }
     }
+
+    assertCallbackSignature(raw.turso_context_destructor_t, void, .{usize}, "context destructor");
+    assertCallbackSignature(raw.turso_value_destructor_t, void, .{[*c]raw.turso_value_t}, "value destructor");
+    assertCallbackSignature(raw.turso_scalar_function_t, raw.turso_value_t, .{
+        usize,
+        i32,
+        [*c]const raw.turso_value_t,
+        raw.turso_context_destructor_t,
+        raw.turso_value_destructor_t,
+    }, "scalar callback");
 
     const database_open_signature = @typeInfo(@TypeOf(raw.turso_database_open)).@"fn";
     const statement_execute_signature = @typeInfo(@TypeOf(raw.turso_statement_execute)).@"fn";
@@ -124,38 +141,28 @@ comptime {
         @compileError("Turso SDK Kit 0.7.1 extension-control signature mismatch");
     }
 
-    const collation_pointer = @typeInfo(raw.turso_collation_function_t).optional.child;
-    const collation_signature = @typeInfo(@typeInfo(collation_pointer).pointer.child).@"fn";
-    if (collation_signature.params.len != 5 or
-        @sizeOf(collation_signature.params[0].type.?) != @sizeOf(usize) or
-        @sizeOf(collation_signature.params[1].type.?) != @sizeOf([*c]const u8) or
-        @sizeOf(collation_signature.params[2].type.?) != @sizeOf(usize) or
-        @sizeOf(collation_signature.params[3].type.?) != @sizeOf([*c]const u8) or
-        @sizeOf(collation_signature.params[4].type.?) != @sizeOf(usize) or
-        @sizeOf(collation_signature.return_type.?) != @sizeOf(c_int))
-    {
-        @compileError("Turso SDK Kit 0.7.1 collation callback signature mismatch");
-    }
+    assertCallbackSignature(raw.turso_collation_function_t, i32, .{
+        usize,
+        [*c]const u8,
+        usize,
+        [*c]const u8,
+        usize,
+    }, "collation callback");
 
-    const aggregate_init_pointer = @typeInfo(raw.turso_aggregate_init_function_t).optional.child;
-    const aggregate_step_pointer = @typeInfo(raw.turso_aggregate_step_function_t).optional.child;
-    const aggregate_final_pointer = @typeInfo(raw.turso_aggregate_final_function_t).optional.child;
-    const aggregate_init_signature = @typeInfo(@typeInfo(aggregate_init_pointer).pointer.child).@"fn";
-    const aggregate_step_signature = @typeInfo(@typeInfo(aggregate_step_pointer).pointer.child).@"fn";
-    const aggregate_final_signature = @typeInfo(@typeInfo(aggregate_final_pointer).pointer.child).@"fn";
-    if (@sizeOf(raw.turso_agg_ctx_t) != @sizeOf(?*anyopaque) or
-        @offsetOf(raw.turso_agg_ctx_t, "state") != 0 or
-        aggregate_init_signature.params.len != 1 or
-        aggregate_init_signature.return_type.? != [*c]raw.turso_agg_ctx_t or
-        aggregate_step_signature.params.len != 4 or
-        aggregate_step_signature.params[1].type.? != [*c]raw.turso_agg_ctx_t or
-        aggregate_step_signature.return_type.? != raw.turso_value_t or
-        aggregate_final_signature.params.len != 2 or
-        aggregate_final_signature.params[1].type.? != [*c]raw.turso_agg_ctx_t or
-        aggregate_final_signature.return_type.? != raw.turso_value_t)
-    {
-        @compileError("Turso SDK Kit 0.7.1 aggregate callback signature/layout mismatch");
+    if (@sizeOf(raw.turso_agg_ctx_t) != @sizeOf(?*anyopaque) or @offsetOf(raw.turso_agg_ctx_t, "state") != 0) {
+        @compileError("Turso SDK Kit 0.7.1 aggregate context layout mismatch");
     }
+    assertCallbackSignature(raw.turso_aggregate_init_function_t, [*c]raw.turso_agg_ctx_t, .{usize}, "aggregate init callback");
+    assertCallbackSignature(raw.turso_aggregate_step_function_t, raw.turso_value_t, .{
+        usize,
+        [*c]raw.turso_agg_ctx_t,
+        i32,
+        [*c]const raw.turso_value_t,
+    }, "aggregate step callback");
+    assertCallbackSignature(raw.turso_aggregate_final_function_t, raw.turso_value_t, .{
+        usize,
+        [*c]raw.turso_agg_ctx_t,
+    }, "aggregate final callback");
 
     assertConstant("TURSO_COLUMN_KIND_NONE", raw.TURSO_COLUMN_KIND_NONE, -1);
     assertConstant("TURSO_COLUMN_KIND_BUILTIN", raw.TURSO_COLUMN_KIND_BUILTIN, 0);
@@ -163,6 +170,34 @@ comptime {
     assertConstant("TURSO_COLUMN_KIND_DOMAIN", raw.TURSO_COLUMN_KIND_DOMAIN, 2);
     assertConstant("TURSO_COLUMN_KIND_STRUCT", raw.TURSO_COLUMN_KIND_STRUCT, 3);
     assertConstant("TURSO_COLUMN_KIND_UNION", raw.TURSO_COLUMN_KIND_UNION, 4);
+}
+
+comptime {
+    validateAbi();
+}
+
+fn assertCallbackSignature(
+    comptime Callback: type,
+    comptime Return: type,
+    comptime Parameters: anytype,
+    comptime name: []const u8,
+) void {
+    const pointer = @typeInfo(Callback).optional.child;
+    const signature = @typeInfo(@typeInfo(pointer).pointer.child).@"fn";
+    if (std.meta.activeTag(signature.calling_convention) != std.meta.activeTag(std.builtin.CallingConvention.c)) {
+        @compileError("Turso SDK Kit 0.7.1 " ++ name ++ " calling convention mismatch");
+    }
+    if (signature.params.len != Parameters.len) {
+        @compileError("Turso SDK Kit 0.7.1 " ++ name ++ " parameter count mismatch");
+    }
+    inline for (Parameters, 0..) |Expected, index| {
+        if (signature.params[index].type.? != Expected) {
+            @compileError("Turso SDK Kit 0.7.1 " ++ name ++ " parameter type mismatch");
+        }
+    }
+    if (signature.return_type.? != Return) {
+        @compileError("Turso SDK Kit 0.7.1 " ++ name ++ " return type mismatch");
+    }
 }
 
 fn assertConstant(comptime name: []const u8, actual: c_int, expected: c_int) void {

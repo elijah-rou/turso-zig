@@ -2,6 +2,8 @@
 
 ## 1. Implemented v0 contract
 
+The final ABI parity gate classifies and compile-references all 48 public functions and 27 public typedefs in the vendored 0.7.1 header. [`abi-parity.md`](abi-parity.md) is structurally validated against the same source manifest. No callable declaration remains silently raw-only.
+
 v0 is an **embedded/local** binding built with Zig 0.16.0. Library-driven
 synchronous I/O is the default, with explicit opt-in caller-driven statement
 progress. The
@@ -128,8 +130,7 @@ termination rather than continued use of the connection or registrations.
 Successful libraries remain loaded for process lifetime. Runtime qualification
 is limited to Linux dynamic linking with the pinned v0.7.1 regexp fixture.
 
-Defer cloud sync and executor integration. Each deferred area requires a
-separate ownership or scheduler design.
+Cloud sync is outside the vendored 0.7.1 C ABI. Executor integration is not a missing ABI wrapper: the complete caller-driven statement progress adapter is exposed, while database open lacks a native driver and is tracked in [tursodatabase/turso#8043](https://github.com/tursodatabase/turso/issues/8043). Arbitrary extension loading remains an explicit unsafe trust boundary, not deferred safe functionality.
 
 ## 2. Treat `turso.h` as the ABI source of truth
 
@@ -226,6 +227,7 @@ indexes; close ordering; and early row-loop cleanup.
 Run the full supported workflow with Zig 0.16.0 and a matching v0.7.1 library:
 
 ```bash
+zig build abi-parity -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release -Dturso-linkage=dynamic
 zig build test -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release -Dturso-linkage=dynamic
 zig build test -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release -Dturso-linkage=dynamic -Dturso-extension-path=/absolute/path/to/liblimbo_regexp.so
 zig build run-example -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release -Dturso-linkage=dynamic
@@ -237,12 +239,6 @@ For SQLite-compatible SQL semantics, add scenarios to Turso's SQL conformance
 suite when they exercise engine behavior. Keep Zig tests focused on the
 binding's public ownership, conversion, and error contract.
 
-## 6. Expand only with dedicated designs
+## 6. Scope beyond the pinned ABI
 
-- **Cloud sync:** map remote URL, auth token, push/pull/checkpoint, and sync
-  statistics after identifying the corresponding supported C ABI surface.
-- **Callbacks:** extend only after defining ownership and mutation safety for
-  each additional callback family; managed scalar, aggregate, and collation
-  contracts do not imply support for other callback ABIs.
-- **I/O executors:** integrate explicit progress with event loops only after
-  defining cancellation and cleanup behavior; never add hidden retries.
+Cloud sync has no public entry point in the vendored header. Event-loop integration may compose the existing progress API only after defining cancellation and cleanup; it must not add hidden retries. These are product extensions beyond complete SDK Kit 0.7.1 ABI parity, not deferred ABI declarations.
