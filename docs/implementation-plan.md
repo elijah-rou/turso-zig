@@ -2,7 +2,9 @@
 
 ## 1. Implemented v0 contract
 
-v0 is an **embedded/local, synchronous** binding built with Zig 0.16.0. The
+v0 is an **embedded/local** binding built with Zig 0.16.0. Library-driven
+synchronous I/O is the default, with explicit opt-in caller-driven statement
+progress. The
 first verified target is x86_64 Linux with glibc and dynamic linkage; other
 targets are unsupported until their matching native artifact and loader
 behavior pass runtime tests. Static artifact selection exists but its native
@@ -49,21 +51,23 @@ The public surface exports `version`, `setup`, `SetupConfig`, `SetupResult`,
 `SetupFailure`, `Logger`, `Log`, `LogLevel`, `Database`, `Connection`,
 `Statement`, `Value`, managed scalar and aggregate callback value/result/context
 types, `Collation`, `Arity`, `ExtensionResultCode`, `ExtensionTextSubtype`,
-`Step`, `ColumnKind`, `Error`, `ConstructionFailure`, and the explicitly
+`Step`, `ColumnKind`, `IoMode`, the progress result types, `Error`,
+`ConstructionFailure`, and the explicitly
 unstable raw `c` namespace. Setup validates bounded strings and
 returns owned native diagnostics. Its first successful process-global level
 wins; later successful setup calls may replace only the process-lifetime plain
 logger function pointer. Logger calls may be concurrent, record slices are
 invocation-borrowed, and malformed or same-thread reentrant records are
 dropped. Database configuration covers the local path and
-the optional 0.7.1 experimental-feature, VFS, and encryption strings while
-forcing `async_io = 0`. Connection methods expose prepare-first/single, busy timeout, autocommit, last
+the optional 0.7.1 experimental-feature, VFS, and encryption strings plus an
+I/O mode that maps explicitly to `async_io`. Connection methods expose
+prepare-first/single, busy timeout, autocommit, last
 insert rowid, managed collation registration/unregistration, per-connection SQL
 extension gating, explicitly unsafe direct trusted-extension loading, close,
 and deinit.
-Statement methods
-cover positional binds, execute/step, parameter and column metadata, copied row
-values, changes, reset, finalize, and deinit.
+Statement methods cover positional binds, synchronous and caller-progress
+execute/step/finalize, one-step `runIo`, parameter and column metadata, copied
+row values, changes, reset, and deinit.
 
 Managed scalar functions use heap-stable typed contexts and bounded borrowed
 arguments. Native ownership is authoritative only after raw `TURSO_OK`; earlier
@@ -124,8 +128,8 @@ termination rather than continued use of the connection or registrations.
 Successful libraries remain loaded for process lifetime. Runtime qualification
 is limited to Linux dynamic linking with the pinned v0.7.1 regexp fixture.
 
-Defer cloud sync and async I/O. Each deferred area requires a separate
-ownership or scheduler design.
+Defer cloud sync and executor integration. Each deferred area requires a
+separate ownership or scheduler design.
 
 ## 2. Treat `turso.h` as the ABI source of truth
 
@@ -187,13 +191,29 @@ tests. Assert local invariants at the boundary: a handle is non-null, indexes
 fit the ABI type, only valid value tags are decoded, and a wrapper is not used
 after `deinit`.
 
-## 4. Keep v0 synchronous
+## 4. Keep I/O ownership explicit
 
-Set `turso_database_config_t.async_io` to zero for v0. The C API may return
-`TURSO_IO` when async I/O is enabled; progress then requires repeated,
-state-aware calls to `turso_statement_run_io`. That state machine should be a
-separate feature with its own executor integration and tests. Do not hide it in
-a blocking retry loop.
+Keep `async_io = 0` for the default `.library_driven` mode. Caller-driven mode
+sets it to one and exposes each native statement progress operation as one call.
+After `TURSO_IO`, require one `turso_statement_run_io` call returning `TURSO_OK`,
+then a retry of the same operation. Record native I/O, completion, finalization,
+and database-open states before fallible diagnostic handling. Do not map
+`TURSO_OK` to statement completion and do not hide retries in progress methods.
+Pinned library-driven operations and native reset/drop internals may drain I/O
+in loops.
+
+Caller-driven `reset` and `deinit` are explicit cancellation/teardown routes
+for awaiting-I/O and retry-required operations. Native reset/drop internals may
+synchronously drain I/O while aborting, so only the progress methods guarantee
+one native iteration per call. `reset` clears sidecar progress after native
+success; `deinit` always removes and frees the sidecar after native teardown.
+
+The 0.7.1 C ABI has no database I/O driver even though `turso_database_open`
+can return `TURSO_IO`. Restrict caller-driven configurations to default,
+`memory`, and `syscall` source-proven backends; reject asynchronous and custom
+VFS choices. If open still returns `TURSO_IO`, surface terminal
+`needs_io_without_driver`, retain a diagnostic, and forbid connection. Track the
+ABI fix in [tursodatabase/turso#8043](https://github.com/tursodatabase/turso/issues/8043).
 
 ## 5. Verification
 
@@ -224,5 +244,5 @@ binding's public ownership, conversion, and error contract.
 - **Callbacks:** extend only after defining ownership and mutation safety for
   each additional callback family; managed scalar, aggregate, and collation
   contracts do not imply support for other callback ABIs.
-- **Async I/O:** expose progress without blocking an event loop and define
-  cancellation plus cleanup behavior.
+- **I/O executors:** integrate explicit progress with event loops only after
+  defining cancellation and cleanup behavior; never add hidden retries.

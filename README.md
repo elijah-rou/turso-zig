@@ -1,7 +1,8 @@
 # Turso for Zig
 
-An early synchronous Zig 0.16.0 SDK for Turso embedded/local databases. The
-implemented API exposes the runtime version and process-global tracing setup,
+An early Zig 0.16.0 SDK for Turso embedded/local databases. Synchronous
+library-driven I/O remains the default; caller-driven statement progress is an
+explicit opt-in. The implemented API exposes the runtime version and process-global tracing setup,
 opens local databases, prepares statements, binds positional values, executes
 SQL, streams rows, copies typed values, exposes metadata and transaction state,
 registers managed scalar and aggregate functions and collations, controls SQL
@@ -10,9 +11,9 @@ and retains native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
 Loadable extensions are qualified only on that Linux dynamic path. macOS,
-Windows, cloud sync, and async I/O are not yet supported. Process-global
-tracing callbacks and managed scalar, aggregate, and collation SQL callbacks
-are supported as described below.
+Windows and cloud sync are not yet supported. Caller-driven I/O is qualified
+only for the backend limits described below. Process-global tracing callbacks
+and managed scalar, aggregate, and collation SQL callbacks are supported.
 
 ## Native library requirement
 
@@ -81,6 +82,33 @@ Turso v0.7.1 `limbo_regexp` cdylib. Consumer builds never run Cargo. Ordinary
 `zig build test` remains available without the optional fixture path; CI always
 builds the pinned fixture and supplies its absolute path to the isolated
 extension test executable.
+
+## Caller-driven I/O
+
+`Database.Config.io_mode` defaults to `.library_driven`, preserving the
+synchronous `open`, `Statement.execute`, `step`, and `finalize` behavior. Opt in
+with `.caller_driven`, then use `openProgress`, `executeProgress`,
+`stepProgress`, `finalizeProgress`, and one-step `runIo`. Progress methods never
+loop: an operation returning `.needs_io` must be followed by exactly one
+successful `runIo`, then a retry of that same operation. `runIo` returning
+success does not mean the SQL operation is done. `reset` and `deinit` are the
+explicit cancellation/teardown routes for pending native work. Unlike progress
+methods, Turso 0.7.1 cleanup may synchronously drain pending I/O before aborting;
+`reset` clears wrapper progress only after native success, while `deinit` always
+releases the native statement and sidecar. A statement operation invalidates the
+current row even when it is rejected or reports `.needs_io`.
+
+Caller-driven construction accepts only the source-proven default, `memory`,
+or `syscall` VFS selection. It rejects `io_uring`,
+`experimental_win_iocp`, and extension or unknown VFS names. Turso SDK Kit
+0.7.1 can return `TURSO_IO` from `turso_database_open`, but its C ABI exposes no
+database `run_io`. Therefore `openProgress` returns the terminal
+`.needs_io_without_driver` result if opening needs I/O, retains an explicit
+diagnostic, and does not permit `connect`. It does not retry, block, or spin.
+This ABI gap is tracked upstream in
+[tursodatabase/turso#8043](https://github.com/tursodatabase/turso/issues/8043).
+The in-memory backend is runtime-tested and currently completes without a
+runtime I/O transition; tests do not claim that `runIo` path as observed there.
 
 ## Setup and logging
 
@@ -218,9 +246,11 @@ ending execution. `Connection.close` is an optional early shutdown that prevents
 later operations; `Connection.deinit` also closes and always releases the handle.
 Call each owner's `deinit` exactly once in reverse acquisition order.
 
-Connections and statements are exclusive-use. The API is synchronous and adds
-no locking or hidden thread synchronization. Database sharing is limited to
-what the C API permits, and a database must outlive all of its connections.
+Connections and statements are exclusive-use. The API adds no locking or hidden
+thread synchronization. Caller-driven progress methods perform one native step
+and never loop; pinned library-driven operations and native reset/drop internals
+may loop while draining I/O. Database sharing is limited to what the C API
+permits, and a database must outlive all of its connections.
 
 `Statement.value` returns a `Value`. Text and blob variants are allocator-owned
 copies that remain valid across later statement operations; call `Value.deinit`

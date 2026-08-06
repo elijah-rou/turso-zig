@@ -2,10 +2,12 @@ const std = @import("std");
 const c = @import("c_api.zig").raw;
 const errors = @import("error.zig");
 const ownership = @import("ownership.zig");
+const progress = @import("io_progress.zig");
 const Connection = @import("connection.zig").Connection;
 
 pub const DatabaseConfig = struct {
     path: []const u8,
+    io_mode: progress.IoMode = .library_driven,
     experimental_features: ?[]const u8 = null,
     vfs: ?[]const u8 = null,
     encryption_cipher: ?[]const u8 = null,
@@ -36,7 +38,9 @@ pub const Database = struct {
     stored_config: StoredConfig,
     diagnostic: ?[]u8 = null,
     owner_state: *ownership.DatabaseState,
+    io_mode: progress.IoMode,
     opened: bool = false,
+    open_needs_io_without_driver: bool = false,
 
     pub fn create(allocator: std.mem.Allocator, config: DatabaseConfig) std.mem.Allocator.Error!InitResult {
         if (!configStringsAreValid(config)) {
@@ -45,18 +49,27 @@ pub const Database = struct {
                 .diagnostic = try allocator.dupe(u8, "database config strings must not contain NUL bytes"),
             } };
         }
+        if (config.io_mode == .caller_driven and !callerDrivenVfsIsSupported(config.vfs)) {
+            return .{ .failure = .{
+                .category = errors.Error.InvalidConfig,
+                .diagnostic = try allocator.dupe(u8, "caller-driven I/O supports only default, memory, or syscall VFS backends"),
+            } };
+        }
 
         var stored_config = try StoredConfig.init(allocator, config);
         errdefer stored_config.deinit(allocator);
 
         var c_config = std.mem.zeroes(c.turso_database_config_t);
-        c_config.async_io = 0;
+        c_config.async_io = switch (config.io_mode) {
+            .library_driven => 0,
+            .caller_driven => 1,
+        };
         c_config.path = stored_config.path.ptr;
         c_config.experimental_features = optionalPointer(stored_config.experimental_features);
         c_config.vfs = optionalPointer(stored_config.vfs);
         c_config.encryption_cipher = optionalPointer(stored_config.encryption_cipher);
         c_config.encryption_hexkey = optionalPointer(stored_config.encryption_hexkey);
-        std.debug.assert(c_config.async_io == 0);
+        std.debug.assert((c_config.async_io != 0) == (config.io_mode == .caller_driven));
         std.debug.assert(c_config.path != null);
 
         var handle: ?*const c.turso_database_t = null;
@@ -102,6 +115,7 @@ pub const Database = struct {
             .handle = valid_handle,
             .stored_config = stored_config,
             .owner_state = owner_state,
+            .io_mode = config.io_mode,
         } };
     }
 
@@ -125,6 +139,10 @@ pub const Database = struct {
             return errors.Error.InvalidState;
         };
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
+        if (self.io_mode == .caller_driven) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "open is unavailable in caller-driven I/O mode");
+            return errors.Error.InvalidState;
+        }
         if (self.opened) {
             try errors.setDiagnostic(self.allocator, &self.diagnostic, "database is already open");
             return errors.Error.InvalidState;
@@ -134,6 +152,47 @@ pub const Database = struct {
         const status = c.turso_database_open(handle, &error_opt_out);
         if (status == c.TURSO_OK) self.opened = true;
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
+    }
+
+    pub fn openProgress(self: *Database) errors.Error!progress.OpenProgress {
+        const handle = self.handle orelse {
+            std.debug.assert(false);
+            return errors.Error.InvalidState;
+        };
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
+        if (self.io_mode != .caller_driven) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "openProgress requires caller-driven I/O mode");
+            return errors.Error.InvalidState;
+        }
+        if (self.opened) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "database is already open");
+            return errors.Error.InvalidState;
+        }
+        if (self.open_needs_io_without_driver) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "database open needs I/O, but Turso SDK Kit 0.7.1 exposes no database run_io driver");
+            return .needs_io_without_driver;
+        }
+
+        var error_opt_out: [*c]const u8 = null;
+        const status = c.turso_database_open(handle, &error_opt_out);
+        recordOpenStatus(&self.opened, &self.open_needs_io_without_driver, status);
+        switch (status) {
+            c.TURSO_OK => {
+                const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
+                try errors.rejectUnexpectedDiagnostic(self.allocator, copied);
+                return .ready;
+            },
+            c.TURSO_IO => {
+                const copied = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
+                try errors.rejectUnexpectedDiagnostic(self.allocator, copied);
+                try errors.setDiagnostic(self.allocator, &self.diagnostic, "database open needs I/O, but Turso SDK Kit 0.7.1 exposes no database run_io driver");
+                return .needs_io_without_driver;
+            },
+            else => {
+                self.diagnostic = try errors.copyAndFreeDiagnostic(self.allocator, error_opt_out);
+                return errors.statusToError(status);
+            },
+        }
     }
 
     pub fn connect(self: *Database) errors.Error!Connection {
@@ -166,6 +225,7 @@ pub const Database = struct {
             .handle = valid_handle,
             .database_owner_state = self.owner_state,
             .owner_state = owner_state,
+            .io_mode = self.io_mode,
         };
     }
 
@@ -182,6 +242,7 @@ pub const Database = struct {
         self.stored_config.deinit(self.allocator);
         self.allocator.destroy(self.owner_state);
         self.opened = false;
+        self.open_needs_io_without_driver = false;
     }
 };
 
@@ -220,6 +281,42 @@ const StoredConfig = struct {
         if (self.encryption_hexkey) |value| allocator.free(value);
     }
 };
+
+fn recordOpenStatus(
+    opened: *bool,
+    needs_io_without_driver: *bool,
+    status: c.turso_status_code_t,
+) void {
+    switch (status) {
+        c.TURSO_OK => opened.* = true,
+        c.TURSO_IO => needs_io_without_driver.* = true,
+        else => {},
+    }
+}
+
+fn failOpenDiagnosticForTest(failure: errors.Error) errors.Error!void {
+    return failure;
+}
+
+test "caller-driven open records terminal native statuses before diagnostic errors" {
+    var opened = false;
+    var needs_io_without_driver = false;
+
+    recordOpenStatus(&opened, &needs_io_without_driver, c.TURSO_OK);
+    try std.testing.expectError(errors.Error.OutOfMemory, failOpenDiagnosticForTest(errors.Error.OutOfMemory));
+    try std.testing.expect(opened);
+
+    opened = false;
+    recordOpenStatus(&opened, &needs_io_without_driver, c.TURSO_IO);
+    try std.testing.expectError(errors.Error.UnexpectedDiagnostic, failOpenDiagnosticForTest(errors.Error.UnexpectedDiagnostic));
+    try std.testing.expect(!opened);
+    try std.testing.expect(needs_io_without_driver);
+}
+
+fn callerDrivenVfsIsSupported(vfs: ?[]const u8) bool {
+    const name = vfs orelse return true;
+    return std.mem.eql(u8, name, "memory") or std.mem.eql(u8, name, "syscall");
+}
 
 fn configStringsAreValid(config: DatabaseConfig) bool {
     if (std.mem.indexOfScalar(u8, config.path, 0) != null) return false;

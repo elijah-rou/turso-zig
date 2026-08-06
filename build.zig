@@ -54,6 +54,30 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run SDK tests");
     test_step.dependOn(&run_sdk_tests.step);
 
+    const internal_tests_module = b.createModule(.{
+        .root_source_file = b.path("src/internal_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    internal_tests_module.addIncludePath(b.path("vendor/turso-sdk-kit-0.7.1"));
+    internal_tests_module.link_libc = true;
+    internal_tests_module.addObjectFile(tursoLibraryPath(b, target.result, turso_lib_dir, turso_linkage));
+    if (turso_linkage == .dynamic) internal_tests_module.addRPath(turso_lib_dir);
+    const internal_tests = b.addTest(.{ .root_module = internal_tests_module });
+    if (missing_turso_lib_dir) |failure| internal_tests.step.dependOn(&failure.step);
+    const run_internal_tests = b.addRunArtifact(internal_tests);
+    test_step.dependOn(&run_internal_tests.step);
+
+    const io_progress_module = b.createModule(.{
+        .root_source_file = b.path("tests/io_progress_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    io_progress_module.addImport("turso", module);
+    const io_progress_tests = b.addTest(.{ .root_module = io_progress_module });
+    const run_io_progress_tests = b.addRunArtifact(io_progress_tests);
+    test_step.dependOn(&run_io_progress_tests.step);
+
     const isolated_tests = [_]struct { name: []const u8, path: []const u8 }{
         .{ .name = "turso-setup-invalid-test", .path = "tests/setup_invalid.zig" },
         .{ .name = "turso-setup-logger-test", .path = "tests/setup_logger.zig" },

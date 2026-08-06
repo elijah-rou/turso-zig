@@ -89,6 +89,25 @@ comptime {
         @compileError("Turso SDK Kit 0.7.1 callback signature mismatch");
     }
 
+    const database_open_signature = @typeInfo(@TypeOf(raw.turso_database_open)).@"fn";
+    const statement_execute_signature = @typeInfo(@TypeOf(raw.turso_statement_execute)).@"fn";
+    const statement_step_signature = @typeInfo(@TypeOf(raw.turso_statement_step)).@"fn";
+    const statement_run_io_signature = @typeInfo(@TypeOf(raw.turso_statement_run_io)).@"fn";
+    const statement_finalize_signature = @typeInfo(@TypeOf(raw.turso_statement_finalize)).@"fn";
+    if (database_open_signature.params.len != 2 or
+        database_open_signature.return_type.? != raw.turso_status_code_t or
+        statement_execute_signature.params.len != 3 or
+        statement_execute_signature.return_type.? != raw.turso_status_code_t or
+        statement_step_signature.params.len != 2 or
+        statement_step_signature.return_type.? != raw.turso_status_code_t or
+        statement_run_io_signature.params.len != 2 or
+        statement_run_io_signature.return_type.? != raw.turso_status_code_t or
+        statement_finalize_signature.params.len != 2 or
+        statement_finalize_signature.return_type.? != raw.turso_status_code_t)
+    {
+        @compileError("Turso SDK Kit 0.7.1 I/O progress signature mismatch");
+    }
+
     const extension_gate_signature = @typeInfo(@TypeOf(raw.turso_connection_enable_load_extension)).@"fn";
     const extension_load_signature = @typeInfo(@TypeOf(raw.turso_connection_load_extension)).@"fn";
     if (extension_gate_signature.params.len != 3 or
