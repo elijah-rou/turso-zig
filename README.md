@@ -15,7 +15,7 @@ This package vendors `turso.h` from Turso tag `v0.7.1`. Supply a
 `turso_sdk_kit` library built from that same tag. A current `main` or 0.8
 pre-release library is not ABI-compatible merely because it links.
 
-Every build command requires an absolute library directory:
+Every compile or run command requires an absolute library directory:
 
 ```bash
 zig build test \
@@ -70,8 +70,9 @@ runtime-version checking and diagnostic reporting.
 values. Pass pointers to them after construction; copying an active owner would
 alias a native handle and is forbidden. Destroy statements before their
 connection and connections before their database. Finalize a statement when
-ending execution, close a connection when ending use, then call each owner's
-`deinit` exactly once in reverse acquisition order.
+ending execution. `Connection.close` is an optional early shutdown that prevents
+later operations; `Connection.deinit` also closes and always releases the handle.
+Call each owner's `deinit` exactly once in reverse acquisition order.
 
 Connections and statements are exclusive-use. The API is synchronous and adds
 no locking or hidden thread synchronization. Database sharing is limited to
