@@ -56,11 +56,17 @@ beside any FFI work. The relevant groups are:
 | --- | --- |
 | Process configuration | `turso_setup`, `turso_version` |
 | Database lifecycle | `turso_database_new`, `turso_database_open`, `turso_database_connect`, `turso_database_deinit` |
-| Connection lifecycle | `turso_connection_prepare_single`, `turso_connection_close`, `turso_connection_deinit` |
+| Connection lifecycle | `turso_connection_prepare_first`, `turso_connection_prepare_single`, `turso_connection_close`, `turso_connection_deinit` |
 | Execution | `turso_statement_execute`, `turso_statement_step`, `turso_statement_reset`, `turso_statement_finalize`, `turso_statement_run_io` |
 | Binding | `turso_statement_bind_positional_*`, `turso_statement_named_position` |
 | Results | `turso_statement_row_value_*`, `turso_statement_column_*` |
 | Allocated diagnostics/metadata | `turso_str_deinit` |
+
+The 0.7.1 native `turso_connection_prepare_single` accepts a second statement
+and silently ignores it despite the header's single-statement wording. The safe
+Zig `prepareSingle` wrapper therefore uses `turso_connection_prepare_first`,
+checks that the returned byte offset is within the input, and rejects non-space
+trailing SQL. `prepareFirst` exposes the same checked byte offset directly.
 
 Start with `@cImport` of the header, compiled with the same target ABI as the
 native Turso library. Do not hand-transcribe C enums, structs, function-pointer
@@ -78,7 +84,7 @@ pointer and should be non-copyable by convention and API design.
 - A connection returned through `turso_database_connect` is owned until
   `turso_connection_deinit`; call `turso_connection_close` when the public API
   needs an explicit early-close operation.
-- A statement returned through `turso_connection_prepare_single` is owned until
+- A statement returned through either prepare function is owned until
   `turso_statement_deinit`. Use `reset` for reuse and `finalize` when ending
   execution, according to the documented statement state machine.
 - Strings returned by metadata functions and error out-parameters must be
