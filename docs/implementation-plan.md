@@ -47,7 +47,7 @@ only by end of string, `-`, or `+`.
 
 The public surface exports `version`, `setup`, `SetupConfig`, `SetupResult`,
 `SetupFailure`, `Logger`, `Log`, `LogLevel`, `Database`, `Connection`,
-`Statement`, `Value`, managed scalar callback value/result/context types,
+`Statement`, `Value`, managed scalar and aggregate callback value/result/context types,
 `Arity`, `ExtensionResultCode`, `ExtensionTextSubtype`, `Step`, `ColumnKind`,
 `Error`, `ConstructionFailure`, and the explicitly unstable raw `c` namespace. Setup validates bounded strings and
 returns owned native diagnostics. Its first successful process-global level
@@ -65,16 +65,32 @@ Managed scalar functions use heap-stable typed contexts and bounded borrowed
 arguments. Native ownership is authoritative only after raw `TURSO_OK`; earlier
 failure leaves context cleanup with the caller. A heap-stable connection guard
 blocks callback and context-deinitializer reentry through every connection and
-statement operation without another native call. Replacement, unregister,
-delayed prepared-program release, and connection teardown determine context
-destruction. Turso 0.7.1 loses JSON subtype on SQL callback arguments and cannot
-supply ERROR arguments; those decoder cases remain ABI-defensive. JSON results
+statement operation without another native call. Replacement, unregister, and
+connection teardown determine context destruction. Turso 0.7.1 prepared
+programs copy function entries without
+retaining registration ownership, so the safe API rejects every scalar or
+aggregate registration, replacement, and unregister operation while any
+statement exists on that connection. Turso 0.7.1 loses JSON subtype on SQL
+callback arguments and cannot supply ERROR arguments; those decoder cases
+remain ABI-defensive. JSON results
 and text/blob/error results are copied into at most 16 MiB of package-owned
 backing and released by the always-supplied value destructor.
 
-Defer cloud sync, aggregate functions, collations, loadable extensions, and
-async I/O. Each deferred area requires a separate ownership, scheduler, or
-trust-boundary design.
+Managed aggregates add a typed per-group state initialized into heap-stable
+boxes. Step/final callbacks reuse the scalar argument/result codec and always
+supply the value destructor. Turso 0.7.1 can reuse aggregate state after an
+`aggregate_destructor` notification in window programs and can omit that
+notification during reset or teardown. Each registration therefore owns a
+bounded registry of 4096 stable state boxes until all statements are gone.
+Destructor notifications are idempotent, later window step/final calls remain
+valid, and statement quiescence runs each state deinitializer exactly once
+before freeing its box. Zero-statement context destruction also performs
+reclamation before removing its registration from the explicit heap-stable
+connection list. The 4097th retained state fails with managed out-of-range
+before initialization or allocation.
+
+Defer cloud sync, collations, loadable extensions, and async I/O. Each deferred
+area requires a separate ownership, scheduler, or trust-boundary design.
 
 ## 2. Treat `turso.h` as the ABI source of truth
 
@@ -168,8 +184,8 @@ binding's public ownership, conversion, and error contract.
 
 - **Cloud sync:** map remote URL, auth token, push/pull/checkpoint, and sync
   statistics after identifying the corresponding supported C ABI surface.
-- **Callbacks:** aggregate functions and collations require separate state and
-  ownership designs; scalar support does not imply either contract.
+- **Callbacks:** collations require a separate ordering and ownership design;
+  scalar and aggregate support does not imply that contract.
 - **Extensions:** default disabled; enabling loading changes the application's
   trust boundary.
 - **Async I/O:** expose progress without blocking an event loop and define

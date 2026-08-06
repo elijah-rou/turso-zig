@@ -238,6 +238,9 @@ pub const Statement = struct {
         c.turso_statement_deinit(handle);
         self.handle = null;
         self.connection_owner_state.active_statements -= 1;
+        if (self.connection_owner_state.active_statements == 0) {
+            self.connection_owner_state.reclaimAggregateStates();
+        }
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
         self.row_available = false;
         self.finalized = true;
@@ -287,7 +290,7 @@ pub const Statement = struct {
         self.connection_owner_state.recordCallbackViolation();
         const mutable: *Statement = @constCast(self);
         errors.clearDiagnostic(self.allocator, &mutable.diagnostic);
-        try errors.setDiagnostic(self.allocator, &mutable.diagnostic, "scalar callback re-entry is not allowed");
+        try errors.setDiagnostic(self.allocator, &mutable.diagnostic, "managed callback re-entry is not allowed");
         return errors.Error.InvalidState;
     }
 

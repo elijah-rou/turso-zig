@@ -4,12 +4,12 @@ An early synchronous Zig 0.16.0 SDK for Turso embedded/local databases. The
 implemented API exposes the runtime version and process-global tracing setup,
 opens local databases, prepares statements, binds positional values, executes
 SQL, streams rows, copies typed values, exposes metadata and transaction state,
-registers managed scalar functions, and retains native diagnostics.
+registers managed scalar and aggregate functions, and retains native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
-macOS, Windows, cloud sync, aggregate/collation callbacks, loadable extensions,
-and async I/O are not yet supported. Process-global tracing callbacks and
-managed scalar SQL callbacks are supported as described below.
+macOS, Windows, cloud sync, collation callbacks, loadable extensions, and async
+I/O are not yet supported. Process-global tracing callbacks and managed
+scalar/aggregate SQL callbacks are supported as described below.
 
 ## Native library requirement
 
@@ -83,11 +83,34 @@ Turso copies them.
 
 Callbacks and context deinitializers must not panic or re-enter their owning
 connection or its statements. Reentry is rejected without crossing the C
-boundary and makes an active callback return a managed SQL error. Native
-ownership begins only after successful registration. Before success, the caller
-retains context ownership. After success, replacement, `unregisterFunction`,
-prepared-program release, or connection teardown calls the context
-deinitializer exactly once.
+boundary and makes an active callback return a managed SQL error. Native ownership begins only after successful registration. Before success, the
+caller retains context ownership. Because Turso 0.7.1 prepared programs copy
+function entries without retaining their registration ownership, every scalar
+or aggregate registration, replacement, and `unregisterFunction` call returns
+`InvalidState` while any statement exists on the connection. After all
+statements are deinitialized, replacement, unregister, or connection teardown
+calls the context deinitializer exactly once.
+
+## Managed aggregate functions
+
+`Connection.registerAggregateFunction` takes an `AggregateFunction(Context,
+State)`. Its typed registration context initializes one heap-stable state per
+SQL group; `step` receives invocation-borrowed arguments, `final` returns a
+copied managed result, and optional state/context deinitializers run exactly
+once. A null initializer result or wrapper allocation failure becomes a managed
+SQL error rather than a null dereference.
+
+Turso 0.7.1 can repeat an aggregate destructor for window programs, reuse the
+same state afterward, and discard an external aggregate register during reset
+or teardown without invoking that destructor. Each registration therefore
+retains a bounded registry of at most 4096 stable state boxes. Native destructor
+notifications are idempotent; state remains usable for later window step/final
+calls and its deinitializer runs exactly once when the connection's active
+statement count reaches zero or during zero-statement context destruction.
+Exhausting the retained-state bound returns a managed out-of-range error before
+state initialization or allocation.
+Aggregate callbacks and both deinitializers share the same non-reentry and
+non-panicking contract as scalar callbacks.
 
 ## Basic use
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("c_api.zig").raw;
+const aggregate_function = @import("aggregate_function.zig");
 const callback_value = @import("callback_value.zig");
 const errors = @import("error.zig");
 const ownership = @import("ownership.zig");
@@ -115,6 +116,7 @@ pub const Connection = struct {
         }
 
         const handle = try self.beginOperation();
+        try self.rejectActiveFunctionMutation();
         const native_arity: c_int = switch (arity) {
             .variadic => -1,
             .fixed => |count| if (count <= callback_value.max_callback_args)
@@ -155,8 +157,89 @@ pub const Connection = struct {
         try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
     }
 
+    /// Registers or replaces an aggregate callback. The registration context,
+    /// per-group callbacks, and deinitializers must not panic or re-enter this
+    /// connection or any statement created by it.
+    pub fn registerAggregateFunction(
+        self: *Connection,
+        name: []const u8,
+        arity: callback_value.Arity,
+        function: anytype,
+    ) errors.Error!void {
+        const Function = @TypeOf(function);
+        const function_info = @typeInfo(Function);
+        if (comptime function_info != .@"struct" or !@hasField(Function, "context") or
+            !@hasField(Function, "init") or !@hasField(Function, "step") or
+            !@hasField(Function, "final") or !@hasField(Function, "state_deinit") or
+            !@hasField(Function, "context_deinit"))
+        {
+            @compileError("function must be a turso.AggregateFunction(Context, State)");
+        }
+        const Context = @TypeOf(function.context);
+        const InitPointer = @TypeOf(function.init);
+        const init_info = @typeInfo(@typeInfo(InitPointer).pointer.child).@"fn";
+        const optional_state = @typeInfo(init_info.return_type.?);
+        if (comptime optional_state != .optional) {
+            @compileError("aggregate init must return an optional state");
+        }
+        const State = optional_state.optional.child;
+        const Expected = callback_value.AggregateFunction(Context, State);
+        if (comptime Function != Expected) {
+            @compileError("function must be a turso.AggregateFunction(Context, State)");
+        }
+
+        const handle = try self.beginOperation();
+        try self.rejectActiveFunctionMutation();
+        const native_arity: c_int = switch (arity) {
+            .variadic => -1,
+            .fixed => |count| if (count <= callback_value.max_callback_args)
+                count
+            else {
+                try errors.setDiagnostic(self.allocator, &self.diagnostic, "aggregate function arity exceeds 127 arguments");
+                return errors.Error.InvalidArgument;
+            },
+        };
+        try self.validateFunctionName(name);
+        if (!self.owner_state.canRegisterAggregate()) {
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "aggregate registration limit of 4096 reached");
+            return errors.Error.InvalidArgument;
+        }
+
+        const name_z = self.allocator.dupeZ(u8, name) catch return errors.Error.OutOfMemory;
+        defer self.allocator.free(name_z);
+        const Box = aggregate_function.AggregateBox(Context, State);
+        const box = self.allocator.create(Box) catch return errors.Error.OutOfMemory;
+        box.* = .{
+            .allocator = self.allocator,
+            .owner_state = self.owner_state,
+            .function = function,
+        };
+        var transferred = false;
+        defer if (!transferred) self.allocator.destroy(box);
+
+        var error_opt_out: [*c]const u8 = null;
+        const status = c.turso_connection_register_aggregate_function(
+            handle,
+            name_z.ptr,
+            native_arity,
+            @intFromPtr(box),
+            aggregate_function.initTrampoline(Context, State),
+            aggregate_function.stepTrampoline(Context, State),
+            aggregate_function.finalTrampoline(Context, State),
+            aggregate_function.contextDestructor(Context, State),
+            aggregate_function.stateDestructor(Context, State),
+            callback_value.destroyResult,
+            &error_opt_out,
+        );
+        transferred = registrationTransfersOwnership(status);
+        if (transferred) self.owner_state.addAggregateRegistration(&box.registration);
+        errors.clearDiagnostic(self.allocator, &self.diagnostic);
+        try errors.finishOperation(self.allocator, status, error_opt_out, &self.diagnostic);
+    }
+
     pub fn unregisterFunction(self: *Connection, name: []const u8) errors.Error!void {
         const handle = try self.beginOperation();
+        try self.rejectActiveFunctionMutation();
         try self.validateFunctionName(name);
         const name_z = self.allocator.dupeZ(u8, name) catch return errors.Error.OutOfMemory;
         defer self.allocator.free(name_z);
@@ -236,7 +319,9 @@ pub const Connection = struct {
         std.debug.assert(self.owner_state.active_statements == 0);
         std.debug.assert(self.database_owner_state.active_connections > 0);
 
+        self.owner_state.reclaimAggregateStates();
         c.turso_connection_deinit(handle);
+        std.debug.assert(self.owner_state.aggregate_registration_count == 0);
         self.handle = null;
         self.database_owner_state.active_connections -= 1;
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
@@ -262,7 +347,13 @@ pub const Connection = struct {
         if (!self.owner_state.callback_active) return;
         self.owner_state.recordCallbackViolation();
         errors.clearDiagnostic(self.allocator, &self.diagnostic);
-        try errors.setDiagnostic(self.allocator, &self.diagnostic, "scalar callback re-entry is not allowed");
+        try errors.setDiagnostic(self.allocator, &self.diagnostic, "managed callback re-entry is not allowed");
+        return errors.Error.InvalidState;
+    }
+
+    fn rejectActiveFunctionMutation(self: *Connection) errors.Error!void {
+        if (self.owner_state.active_statements == 0) return;
+        try errors.setDiagnostic(self.allocator, &self.diagnostic, "function table cannot be mutated while statements are active");
         return errors.Error.InvalidState;
     }
 
@@ -270,7 +361,7 @@ pub const Connection = struct {
         if (name.len == 0 or name.len > 255 or std.mem.indexOfScalar(u8, name, 0) != null or
             !std.unicode.utf8ValidateSlice(name))
         {
-            try errors.setDiagnostic(self.allocator, &self.diagnostic, "scalar function name must be 1..255 UTF-8 bytes without NUL");
+            try errors.setDiagnostic(self.allocator, &self.diagnostic, "function name must be 1..255 UTF-8 bytes without NUL");
             return errors.Error.InvalidArgument;
         }
     }
