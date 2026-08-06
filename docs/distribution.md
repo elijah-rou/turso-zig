@@ -24,17 +24,14 @@ and defaults to `dynamic`. The build restricts lookup to the supplied library
 directory, adds its runtime search path for dynamic builds, does not use
 `pkg-config`, and never invokes Cargo.
 
-<<<<<<< HEAD
-This keeps the first Zig package small and makes ABI compatibility visible. It
-is appropriate for SDK development and CI. Package discovery (`zig build --help`)
-and the artifact-free default step do not require the option; every compile or
-run step fails unless the native-library directory is supplied.
-=======
+Package discovery (`zig build --help`) and the artifact-free default step do
+not require the option; every compile or run step fails unless the native-library
+directory is supplied.
+
 Dynamic Ubuntu x86_64 with glibc is the only runtime-qualified distribution
 path today. Static selection requests `libturso_sdk_kit.a`, but static support
 is not complete until its Rust and platform system-library dependencies are
 enumerated and tested. No macOS or Windows runtime support is claimed.
->>>>>>> f5da640 (docs: add synchronous SDK example and usage)
 
 The tests and example call `turso_version()` and accept only `0.7.1` followed
 by end of string, `-`, or `+`. This catches obvious mismatches but cannot prove
