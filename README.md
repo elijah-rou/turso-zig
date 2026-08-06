@@ -4,13 +4,15 @@ An early synchronous Zig 0.16.0 SDK for Turso embedded/local databases. The
 implemented API exposes the runtime version and process-global tracing setup,
 opens local databases, prepares statements, binds positional values, executes
 SQL, streams rows, copies typed values, exposes metadata and transaction state,
-registers managed scalar and aggregate functions and collations, and retains
-native diagnostics.
+registers managed scalar and aggregate functions and collations, controls SQL
+extension loading, exposes an explicitly unsafe native-extension trust boundary,
+and retains native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
-macOS, Windows, cloud sync, loadable extensions, and async I/O are not yet
-supported. Process-global tracing callbacks and managed scalar, aggregate, and
-collation SQL callbacks are supported as described below.
+Loadable extensions are qualified only on that Linux dynamic path. macOS,
+Windows, cloud sync, and async I/O are not yet supported. Process-global
+tracing callbacks and managed scalar, aggregate, and collation SQL callbacks
+are supported as described below.
 
 ## Native library requirement
 
@@ -24,6 +26,11 @@ Every compile or run command requires an absolute library directory:
 zig build test \
   -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
   -Dturso-linkage=dynamic
+# Optional maintainer parity fixture, used only by the extension test executable:
+zig build test \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
+  -Dturso-linkage=dynamic \
+  -Dturso-extension-path=/absolute/path/to/liblimbo_regexp.so
 zig build run-example \
   -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
   -Dturso-linkage=dynamic
@@ -37,6 +44,43 @@ library closure is not enumerated or supported yet. `build.zig` never invokes
 Cargo, falls back to `pkg-config`, or searches for an arbitrary system Turso
 library. Tests and the example reject a runtime version outside the 0.7.1 ABI
 version family (`0.7.1`, `0.7.1-*`, or `0.7.1+*`).
+
+## Native extension controls
+
+`Connection.setSqlExtensionLoadingEnabledUnsafe` controls the SQL
+`load_extension()` function per connection. It is disabled by default, enabling
+one connection does not affect another, and disabling it restores rejection.
+Enabling the gate authorizes every component that can submit SQL on that
+connection to execute native code. It is not a per-statement or per-caller
+capability.
+
+`Connection.loadExtensionUnsafe` is the direct ABI trust-boundary adapter and
+deliberately bypasses the SQL gate. It executes trusted arbitrary native code
+with the process's full privileges; Zig cannot make extension code memory-safe.
+It requires a nonempty absolute UTF-8 path of at most 4095 bytes with no NUL.
+There is no safe alias, sandbox, or unload operation. Both controls reject
+callback/deinitializer reentry and mutation while any statement exists.
+
+Turso's native resolution first checks the supplied path and, when it is absent
+and has no shared-library suffix, may append the platform suffix. The direct Zig
+method still requires that supplied path to be absolute. SQL `load_extension()`
+passes SQL text through native resolution without that programmatic absolute-path
+restriction, so relative or bare SQL arguments remain native behavior. Neither
+path invokes Cargo or searches arbitrary library directories.
+
+Native v0.7.1 loading is not transactional. Extension registration can mutate
+function/module tables before reporting failure, after which native code may be
+unloaded; schema refresh can also fail after a successful registration. Any
+failure after a library was loaded is not safely recoverable. Terminate the
+process without using the connection or partially registered symbols. A
+successful library is retained for process lifetime, so connection close does
+not unload it.
+
+Positive integration is qualified only for Linux dynamic linking with the exact
+Turso v0.7.1 `limbo_regexp` cdylib. Consumer builds never run Cargo. Ordinary
+`zig build test` remains available without the optional fixture path; CI always
+builds the pinned fixture and supplies its absolute path to the isolated
+extension test executable.
 
 ## Setup and logging
 

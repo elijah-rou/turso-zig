@@ -16,7 +16,7 @@ jobs:
   validate:
     name: Ubuntu / Zig 0.16.0 / Turso 0.7.1
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -42,6 +42,7 @@ jobs:
           cmp vendor/turso-sdk-kit-0.7.1/turso.h "$source_dir/sdk-kit/turso.h"
           echo "TURSO_SOURCE=$source_dir" >> "$GITHUB_ENV"
           echo "TURSO_LIB_DIR=$source_dir/target/release" >> "$GITHUB_ENV"
+          echo "TURSO_EXTENSION_PATH=$source_dir/target/release-official/liblimbo_regexp.so" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$source_dir/target/release" >> "$GITHUB_ENV"
 
       - name: Build Turso SDK Kit 0.7.1
@@ -56,6 +57,22 @@ jobs:
             --manifest-path "$TURSO_SOURCE/Cargo.toml"
           test -f "$TURSO_LIB_DIR/libturso_sdk_kit.so"
 
+      - name: Build pinned regexp extension fixture
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 9m cargo build \
+            --locked \
+            --profile release-official \
+            --package limbo_regexp \
+            --manifest-path "$TURSO_SOURCE/Cargo.toml"
+          test -f "$TURSO_EXTENSION_PATH"
+          nm -D --defined-only "$TURSO_EXTENSION_PATH" > \
+            "$RUNNER_TEMP/limbo-regexp-symbols"
+          grep -Eq '[[:space:]]register_extension$' \
+            "$RUNNER_TEMP/limbo-regexp-symbols"
+
       - name: Check formatting
         run: zig fmt --check build.zig src tests examples
 
@@ -64,6 +81,7 @@ jobs:
           zig build test
           -Dturso-lib-dir="$TURSO_LIB_DIR"
           -Dturso-linkage=dynamic
+          -Dturso-extension-path="$TURSO_EXTENSION_PATH"
 
       - name: Run basic example
         run: >-

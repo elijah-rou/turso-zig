@@ -22,8 +22,13 @@ cleanup. Managed collation coverage includes ASCII, non-ASCII UTF-8, empty
 text, equality and ordering, per-connection scope, name validation,
 replacement/unregister/teardown ownership, allocation failure, prepared and
 partially executed statement mutation gates, malformed ABI inputs, and
-comparator/deinitializer reentry. Turso 0.7.1 cannot supply managed ERROR
-callback arguments at SQL runtime.
+comparator/deinitializer reentry. Extension coverage includes the per-connection
+SQL capability gate, the explicitly unsafe direct-loader signature, absolute
+UTF-8 path validation at the 4095-byte boundary, isolated missing-path errors,
+and prepared binding of the pinned positive fixture path. The positive fixture
+runs in a dedicated executable; tests never continue after a loaded extension
+reports failure. Turso 0.7.1 cannot supply managed ERROR callback arguments at
+SQL runtime.
 
 Run the complete suite with Zig 0.16.0 and a native library built from Turso
 tag `v0.7.1`:
