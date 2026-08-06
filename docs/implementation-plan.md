@@ -105,8 +105,9 @@ and explicit sorting. Schema declarations, indexes, uniqueness constraints,
 and persisted schemas that name managed collations remain explicitly unclaimed.
 
 Extension loading is disabled through SQL by default and enabled per
-connection. Enabling it authorizes every SQL submitter on that connection to
-execute native code. `loadExtensionUnsafe` bypasses the SQL gate and is the full
+connection only through `setSqlExtensionLoadingEnabledUnsafe`. Enabling it
+authorizes every SQL submitter on that connection to execute native code.
+`loadExtensionUnsafe` bypasses the SQL gate and is the full
 ABI trust-boundary adapter, not a safe recoverable wrapper. It requires a
 nonempty absolute UTF-8 path of at most 4095 bytes without NUL. SQL arguments
 have no Zig absolute-path restriction. Native resolution checks the supplied

@@ -40,7 +40,7 @@ pub fn main() !void {
     var sql = try openConnection();
     defer sql.database.deinit();
     defer sql.connection.deinit();
-    try sql.connection.setSqlExtensionLoadingEnabled(true);
+    try sql.connection.setSqlExtensionLoadingEnabledUnsafe(true);
     var load = try sql.connection.prepareSingle("SELECT load_extension(?1)");
     defer load.deinit();
     try load.bindText(1, fixture.path);

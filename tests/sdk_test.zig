@@ -390,7 +390,7 @@ test "file persistence and early row-loop cleanup" {
 }
 
 test "extension control public signatures distinguish the SQL gate from unsafe direct loading" {
-    const set_gate: *const fn (*turso.Connection, bool) turso.Error!void = turso.Connection.setSqlExtensionLoadingEnabled;
+    const set_gate: *const fn (*turso.Connection, bool) turso.Error!void = turso.Connection.setSqlExtensionLoadingEnabledUnsafe;
     const direct_load: *const fn (*turso.Connection, []const u8) turso.Error!void = turso.Connection.loadExtensionUnsafe;
     _ = set_gate;
     _ = direct_load;
@@ -417,10 +417,10 @@ test "SQL extension loading is disabled by default and enabled per connection" {
     defer disabled.deinit();
 
     try expectSqlExtensionFailure(&enabled, "runtime extension loading is disabled");
-    try enabled.setSqlExtensionLoadingEnabled(true);
+    try enabled.setSqlExtensionLoadingEnabledUnsafe(true);
     try expectSqlExtensionFailure(&enabled, "Extension file not found");
     try expectSqlExtensionFailure(&disabled, "runtime extension loading is disabled");
-    try enabled.setSqlExtensionLoadingEnabled(false);
+    try enabled.setSqlExtensionLoadingEnabledUnsafe(false);
     try expectSqlExtensionFailure(&enabled, "runtime extension loading is disabled");
 }
 
@@ -486,7 +486,7 @@ test "extension controls reject active statements and closed connections before 
     defer connection.deinit();
 
     var statement = try connection.prepareSingle("SELECT 1");
-    try std.testing.expectError(turso.Error.InvalidState, connection.setSqlExtensionLoadingEnabled(true));
+    try std.testing.expectError(turso.Error.InvalidState, connection.setSqlExtensionLoadingEnabledUnsafe(true));
     try std.testing.expectEqualStrings(
         "extension controls cannot mutate the schema while statements are active",
         connection.latestDiagnostic() orelse return error.MissingActiveExtensionDiagnostic,
@@ -495,7 +495,7 @@ test "extension controls reject active statements and closed connections before 
     statement.deinit();
 
     try connection.close();
-    try std.testing.expectError(turso.Error.InvalidState, connection.setSqlExtensionLoadingEnabled(true));
+    try std.testing.expectError(turso.Error.InvalidState, connection.setSqlExtensionLoadingEnabledUnsafe(true));
     try std.testing.expectEqualStrings("connection is closed", connection.latestDiagnostic().?);
     try std.testing.expectError(turso.Error.InvalidState, connection.loadExtensionUnsafe("/definitely/missing/libextension.so"));
 }
@@ -697,7 +697,7 @@ fn reentryScalar(context: *ReentryContext, _: turso.CallbackArgs) turso.Callback
     };
     context.connection.setBusyTimeoutMs(0) catch {};
     const gate_rejected = rejected: {
-        context.connection.setSqlExtensionLoadingEnabled(true) catch |err| break :rejected err == turso.Error.InvalidState;
+        context.connection.setSqlExtensionLoadingEnabledUnsafe(true) catch |err| break :rejected err == turso.Error.InvalidState;
         break :rejected false;
     };
     const direct_load_rejected = rejected: {
@@ -724,7 +724,7 @@ fn reentryDeinit(context: *ReentryContext) void {
         break :rejected false;
     };
     const gate_rejected = rejected: {
-        context.connection.setSqlExtensionLoadingEnabled(true) catch |err| break :rejected err == turso.Error.InvalidState;
+        context.connection.setSqlExtensionLoadingEnabledUnsafe(true) catch |err| break :rejected err == turso.Error.InvalidState;
         break :rejected false;
     };
     const direct_load_rejected = rejected: {

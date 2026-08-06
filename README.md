@@ -47,7 +47,7 @@ version family (`0.7.1`, `0.7.1-*`, or `0.7.1+*`).
 
 ## Native extension controls
 
-`Connection.setSqlExtensionLoadingEnabled` controls the SQL
+`Connection.setSqlExtensionLoadingEnabledUnsafe` controls the SQL
 `load_extension()` function per connection. It is disabled by default, enabling
 one connection does not affect another, and disabling it restores rejection.
 Enabling the gate authorizes every component that can submit SQL on that

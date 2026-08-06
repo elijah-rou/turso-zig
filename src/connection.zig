@@ -313,7 +313,7 @@ pub const Connection = struct {
     /// Controls only SQL `load_extension()` for this connection. Enabling it
     /// authorizes every SQL submitter using this connection to execute native
     /// code. Direct `loadExtensionUnsafe` calls intentionally bypass this gate.
-    pub fn setSqlExtensionLoadingEnabled(self: *Connection, enabled: bool) errors.Error!void {
+    pub fn setSqlExtensionLoadingEnabledUnsafe(self: *Connection, enabled: bool) errors.Error!void {
         const handle = try self.beginOperation();
         try self.rejectActiveExtensionMutation();
 
