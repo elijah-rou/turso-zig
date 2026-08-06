@@ -8,14 +8,9 @@ registers managed scalar and aggregate functions and collations, and retains
 native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
-<<<<<<< HEAD
-macOS, Windows, cloud sync, collation callbacks, loadable extensions, and async
-I/O are not yet supported. Process-global tracing callbacks and managed
-scalar/aggregate SQL callbacks are supported as described below.
-=======
 macOS, Windows, cloud sync, loadable extensions, and async I/O are not yet
-supported.
->>>>>>> fe0fc10 (fix: complete managed collation contract)
+supported. Process-global tracing callbacks and managed scalar, aggregate, and
+collation SQL callbacks are supported as described below.
 
 ## Native library requirement
 
