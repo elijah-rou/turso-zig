@@ -6,8 +6,7 @@ pub fn main() !void {
     defer std.debug.assert(debug_allocator.deinit() == .ok);
     const allocator = debug_allocator.allocator();
 
-    const version_pointer = turso.c.turso_version() orelse return error.MissingTursoVersion;
-    const version = std.mem.span(version_pointer);
+    const version = try turso.version();
     if (!turso.isAbiCompatibleVersion(version)) {
         std.debug.print("incompatible Turso runtime: expected 0.7.1, loaded {s}\n", .{version});
         return error.IncompatibleTursoVersion;

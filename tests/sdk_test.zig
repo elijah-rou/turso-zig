@@ -19,10 +19,9 @@ fn exec(connection: *turso.Connection, sql: []const u8) !u64 {
     return statement.execute();
 }
 
-test "public ABI reports a compatible Turso SDK Kit version" {
-    const version_ptr = turso.c.turso_version() orelse return error.MissingTursoVersion;
-    const version = std.mem.span(version_ptr);
-    try std.testing.expect(turso.isAbiCompatibleVersion(version));
+test "public version accessor reports a compatible Turso SDK Kit version" {
+    const runtime_version = try turso.version();
+    try std.testing.expect(turso.isAbiCompatibleVersion(runtime_version));
     try std.testing.expect(turso.isAbiCompatibleVersion("0.7.1"));
     try std.testing.expect(turso.isAbiCompatibleVersion("0.7.1-dev"));
     try std.testing.expect(turso.isAbiCompatibleVersion("0.7.1+build"));
@@ -30,6 +29,18 @@ test "public ABI reports a compatible Turso SDK Kit version" {
     try std.testing.expect(!turso.isAbiCompatibleVersion("0.7.10"));
     try std.testing.expect(!turso.isAbiCompatibleVersion("0.7.1.1"));
     try std.testing.expect(!turso.isAbiCompatibleVersion("0.7.2"));
+}
+
+test "public setup types exhaustively model native tracing levels" {
+    try std.testing.expectEqual(@as(usize, 5), @typeInfo(turso.LogLevel).@"enum".fields.len);
+    try std.testing.expectEqual(@as(c_int, turso.c.TURSO_TRACING_LEVEL_ERROR), @intFromEnum(turso.LogLevel.err));
+    try std.testing.expectEqual(@as(c_int, turso.c.TURSO_TRACING_LEVEL_WARN), @intFromEnum(turso.LogLevel.warn));
+    try std.testing.expectEqual(@as(c_int, turso.c.TURSO_TRACING_LEVEL_INFO), @intFromEnum(turso.LogLevel.info));
+    try std.testing.expectEqual(@as(c_int, turso.c.TURSO_TRACING_LEVEL_DEBUG), @intFromEnum(turso.LogLevel.debug));
+    try std.testing.expectEqual(@as(c_int, turso.c.TURSO_TRACING_LEVEL_TRACE), @intFromEnum(turso.LogLevel.trace));
+
+    const config: turso.SetupConfig = .{ .log_level = "info", .logger = null };
+    try std.testing.expectEqualStrings("info", config.log_level.?);
 }
 
 test "database wrapper creates opens connects and cleans up" {

@@ -1,7 +1,12 @@
 # SDK tests
 
 `tests/sdk_test.zig` exercises the public synchronous API against the supplied
-Turso SDK Kit runtime. It verifies the 0.7.1 runtime version, raw ABI smoke
+Turso SDK Kit runtime. Dedicated `setup_*.zig` executables isolate native
+process-global, non-resettable tracing state. Together they verify the safe
+0.7.1 runtime version accessor, exhaustive log levels, owned invalid-setup
+diagnostics, token validation and input-lifetime handling, logger records and
+replacement, rejected setup reentry, and first-successful-level behavior, plus
+the raw ABI smoke
 path, database/connection/statement cleanup, positional values (including
 NULL and empty text/blob), copied-value lifetime, metadata, reset and reuse,
 prepare tails, transaction state, diagnostics, constraint errors, file reopen
