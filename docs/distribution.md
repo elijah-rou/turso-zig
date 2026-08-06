@@ -25,8 +25,9 @@ the supplied directory, does not fall back to `pkg-config` or an arbitrary
 system Turso library, and never invokes Cargo implicitly.
 
 This keeps the first Zig package small and makes ABI compatibility visible. It
-is appropriate for SDK development and CI. The build fails during configuration
-when no native-library directory is supplied.
+is appropriate for SDK development and CI. Package discovery (`zig build --help`)
+and the artifact-free default step do not require the option; every compile or
+run step fails unless the native-library directory is supplied.
 
 ### Phase 2: published, pinned platform artifacts
 
