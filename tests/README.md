@@ -1,8 +1,26 @@
-# Test plan
+# SDK tests
 
-Do not add tests that merely prove wrapper internals exist. Start with observable
-behavior against a local Turso database, then run the same SQL scenarios through
-SQLite where the behavior is expected to be compatible.
+`tests/sdk_test.zig` exercises the public synchronous API against the supplied
+Turso SDK Kit runtime. It verifies the 0.7.1 runtime version, raw ABI smoke
+path, database/connection/statement cleanup, positional values (including
+NULL and empty text/blob), copied-value lifetime, metadata, reset and reuse,
+prepare tails, transaction state, diagnostics, constraint errors, file reopen
+persistence, and early row-loop cleanup under Zig's leak-detecting test
+allocator.
 
-The ordered test matrix is in
-[`../docs/implementation-plan.md`](../docs/implementation-plan.md#5-add-behavioral-tests).
+Run the complete suite with Zig 0.16.0 and a native library built from Turso
+tag `v0.7.1`:
+
+```bash
+zig build test \
+  -Dturso-lib-dir=/absolute/path/to/turso-v0.7.1/target/release \
+  -Dturso-linkage=dynamic
+```
+
+The vendored 0.7.1 header and loaded library are one ABI unit. Do not use a
+library built from current Turso `main`. Dynamic Ubuntu x86_64 is the verified
+configuration; static and other operating systems are not runtime-qualified.
+
+Tests focus on observable wrapper ownership, conversion, lifetime, and error
+contracts. SQL engine conformance belongs in Turso's SQL conformance suites,
+not in symbol-presence tests here.
