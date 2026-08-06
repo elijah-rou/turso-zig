@@ -11,14 +11,9 @@ and retains native diagnostics.
 
 The first verified runtime is Ubuntu x86_64 with glibc and dynamic linking.
 Loadable extensions are qualified only on that Linux dynamic path. macOS,
-<<<<<<< HEAD
-Windows, cloud sync, and async I/O are not yet supported. Process-global
-tracing callbacks and managed scalar, aggregate, and collation SQL callbacks
-are supported as described below.
-=======
 Windows and cloud sync are not yet supported. Caller-driven I/O is qualified
-only for the backend limits described below.
->>>>>>> ae03926 (docs: define caller-driven I/O boundary)
+only for the backend limits described below. Process-global tracing callbacks
+and managed scalar, aggregate, and collation SQL callbacks are supported.
 
 ## Native library requirement
 
