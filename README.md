@@ -100,16 +100,15 @@ copied managed result, and optional state/context deinitializers run exactly
 once. A null initializer result or wrapper allocation failure becomes a managed
 SQL error rather than a null dereference.
 
-Turso 0.7.1 can repeat an aggregate destructor for window programs and can
-also discard an external aggregate register during statement reset or teardown
-without invoking that destructor. Each registration therefore retains a bounded
-registry of at most 4096 live, retired, or abandoned stable state boxes. Native
-destruction tombstones a box and runs its state deinitializer exactly once;
-repeated destruction is idempotent, and later step/final calls on that retired
-state return a managed error. Tombstone backing and abandoned states are freed
-only when the connection's active statement count reaches zero, or during
-zero-statement context destruction. Exhausting the retained-state bound returns
-a managed out-of-range error before state initialization or allocation.
+Turso 0.7.1 can repeat an aggregate destructor for window programs, reuse the
+same state afterward, and discard an external aggregate register during reset
+or teardown without invoking that destructor. Each registration therefore
+retains a bounded registry of at most 4096 stable state boxes. Native destructor
+notifications are idempotent; state remains usable for later window step/final
+calls and its deinitializer runs exactly once when the connection's active
+statement count reaches zero or during zero-statement context destruction.
+Exhausting the retained-state bound returns a managed out-of-range error before
+state initialization or allocation.
 Aggregate callbacks and both deinitializers share the same non-reentry and
 non-panicking contract as scalar callbacks.
 

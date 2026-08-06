@@ -3,7 +3,7 @@ const c = @import("c_api.zig").raw;
 const callback_value = @import("callback_value.zig");
 const ownership = @import("ownership.zig");
 
-/// Bounds live, retired, and abandoned per-group states retained by one registration.
+/// Bounds live and abandoned per-group states retained by one registration.
 pub const max_states_per_registration: usize = 4096;
 
 pub fn AggregateBox(comptime Context: type, comptime State: type) type {
@@ -23,7 +23,6 @@ fn StateBox(comptime State: type) type {
     return struct {
         abi: c.turso_agg_ctx_t,
         state: State,
-        retired: bool = false,
     };
 }
 
@@ -89,7 +88,7 @@ pub fn stepTrampoline(comptime Context: type, comptime State: type) c.turso_aggr
                 return callback_value.encodeBoundaryFailure(.invalid_args);
             const state_box = findState(Context, State, box, aggregate_context) orelse
                 return callback_value.encodeBoundaryFailure(if (aggregate_context == null) box.init_failure else .invalid_args);
-            if (state_box.retired or box.owner_state.callback_active)
+            if (box.owner_state.callback_active)
                 return callback_value.encodeBoundaryFailure(.invalid_args);
 
             const previous = box.owner_state.enterCallback();
@@ -118,7 +117,7 @@ pub fn finalTrampoline(comptime Context: type, comptime State: type) c.turso_agg
                 return callback_value.encodeBoundaryFailure(.invalid_args);
             const state_box = findState(Context, State, box, aggregate_context) orelse
                 return callback_value.encodeBoundaryFailure(if (aggregate_context == null) box.init_failure else .invalid_args);
-            if (state_box.retired or box.owner_state.callback_active)
+            if (box.owner_state.callback_active)
                 return callback_value.encodeBoundaryFailure(.invalid_args);
 
             const previous = box.owner_state.enterCallback();
@@ -138,12 +137,10 @@ pub fn stateDestructor(comptime Context: type, comptime State: type) c.turso_con
             const opaque_registration = aggregate_context.state orelse return;
             const Box = AggregateBox(Context, State);
             const box: *Box = @ptrCast(@alignCast(opaque_registration));
-            const state_box = findState(Context, State, box, aggregate_context) orelse return;
-            if (state_box.retired) return;
-
-            const previous = box.owner_state.enterCallback();
-            retireState(Context, State, box, state_box);
-            _ = box.owner_state.leaveCallback(previous);
+            // Turso 0.7.1 also calls this destructor for intermediate window
+            // values and can reuse the same state afterward. Keep the state alive
+            // until the final owning statement is deinitialized.
+            _ = findState(Context, State, box, aggregate_context) orelse return;
         }
     }.destroy;
 }
@@ -197,14 +194,12 @@ fn deinitTemporary(
     if (box.function.state_deinit) |deinit_function| deinit_function(&box.function.context, state);
 }
 
-fn retireState(
+fn deinitState(
     comptime Context: type,
     comptime State: type,
     box: *AggregateBox(Context, State),
     state_box: *StateBox(State),
 ) void {
-    if (state_box.retired) return;
-    state_box.retired = true;
     if (box.function.state_deinit) |deinit_function| deinit_function(&box.function.context, &state_box.state);
 }
 
@@ -217,7 +212,7 @@ fn reclaimStates(comptime Context: type, comptime State: type) *const fn (*owner
             const previous = box.owner_state.enterCallback();
             for (&box.states) |*slot| {
                 const state_box = slot.* orelse continue;
-                retireState(Context, State, box, state_box);
+                deinitState(Context, State, box, state_box);
                 box.allocator.destroy(state_box);
                 slot.* = null;
             }
@@ -233,7 +228,7 @@ fn reentryFailure(allocator: std.mem.Allocator) c.turso_value_t {
     } });
 }
 
-test "aggregate tombstones reject repeated callbacks and reclaim at statement quiescence" {
+test "aggregate states survive repeated native release until statement quiescence" {
     const Counts = struct {
         state_deinits: usize = 0,
         context_deinits: usize = 0,
@@ -271,16 +266,17 @@ test "aggregate tombstones reject repeated callbacks and reclaim at statement qu
     try std.testing.expect(aggregate_context != null);
     stateDestructor(Counts, u64).?(@intFromPtr(aggregate_context));
     stateDestructor(Counts, u64).?(@intFromPtr(aggregate_context));
-    try std.testing.expectEqual(@as(usize, 1), box.function.context.state_deinits);
-    var stale_step = stepTrampoline(Counts, u64).?(@intFromPtr(box), aggregate_context, 0, null);
-    try std.testing.expectEqual(@as(c_uint, c.TURSO_EXTENSION_RESULT_INVALID_ARGS), stale_step.value.@"error".*.code);
-    callback_value.destroyResult(&stale_step);
-    var stale_final = finalTrampoline(Counts, u64).?(@intFromPtr(box), aggregate_context);
-    try std.testing.expectEqual(@as(c_uint, c.TURSO_EXTENSION_RESULT_INVALID_ARGS), stale_final.value.@"error".*.code);
-    callback_value.destroyResult(&stale_final);
+    try std.testing.expectEqual(@as(usize, 0), box.function.context.state_deinits);
+    var continued_step = stepTrampoline(Counts, u64).?(@intFromPtr(box), aggregate_context, 0, null);
+    try std.testing.expectEqual(@as(c_uint, c.TURSO_EXTENSION_VALUE_NULL), continued_step.value_type);
+    callback_value.destroyResult(&continued_step);
+    var continued_final = finalTrampoline(Counts, u64).?(@intFromPtr(box), aggregate_context);
+    try std.testing.expectEqual(@as(c_uint, c.TURSO_EXTENSION_VALUE_INTEGER), continued_final.value_type);
+    callback_value.destroyResult(&continued_final);
 
     owner_state.active_statements = 0;
     owner_state.reclaimAggregateStates();
+    try std.testing.expectEqual(@as(usize, 1), box.function.context.state_deinits);
     contextDestructor(Counts, u64).?(@intFromPtr(box));
     try std.testing.expectEqual(@as(usize, 0), owner_state.aggregate_registration_count);
 }

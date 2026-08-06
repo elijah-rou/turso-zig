@@ -78,17 +78,16 @@ backing and released by the always-supplied value destructor.
 
 Managed aggregates add a typed per-group state initialized into heap-stable
 boxes. Step/final callbacks reuse the scalar argument/result codec and always
-supply the value destructor. Turso 0.7.1 statement reset and teardown can
-replace aggregate registers without invoking `aggregate_destructor`, so each
-registration owns a bounded registry of 4096 live, retired, or abandoned state
-boxes. Native destruction tombstones state and invokes its deinitializer once
-without freeing the address; repeated destruction is idempotent, while later
-step/final calls on retired state return managed errors. When the active
-statement count reaches zero, the connection reclaims every registration's
-tombstones and abandoned states exactly once. Zero-statement context destruction
-also performs reclamation before removing its registration from the explicit
-heap-stable connection list. The 4097th retained state fails with managed
-out-of-range before initialization or allocation.
+supply the value destructor. Turso 0.7.1 can reuse aggregate state after an
+`aggregate_destructor` notification in window programs and can omit that
+notification during reset or teardown. Each registration therefore owns a
+bounded registry of 4096 stable state boxes until all statements are gone.
+Destructor notifications are idempotent, later window step/final calls remain
+valid, and statement quiescence runs each state deinitializer exactly once
+before freeing its box. Zero-statement context destruction also performs
+reclamation before removing its registration from the explicit heap-stable
+connection list. The 4097th retained state fails with managed out-of-range
+before initialization or allocation.
 
 Defer cloud sync, collations, loadable extensions, and async I/O. Each deferred
 area requires a separate ownership, scheduler, or trust-boundary design.

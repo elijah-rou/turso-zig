@@ -1015,7 +1015,7 @@ fn externalAggregate(counters: *ExternalAggregateCounters) turso.AggregateFuncti
     };
 }
 
-test "window peers retire aggregate state without repeated-destructor UAF" {
+test "window peers reuse aggregate state through repeated native release" {
     var database = try openDatabase(":memory:");
     defer database.deinit();
     try database.open();
@@ -1037,11 +1037,14 @@ test "window peers retire aggregate state without repeated-destructor UAF" {
     var peer = try statement.value(0);
     defer peer.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(i64, 2), peer.integer);
-    try std.testing.expectError(turso.Error.SqlError, statement.step());
-    try std.testing.expect(std.mem.indexOf(u8, statement.latestDiagnostic() orelse "", "Invalid Argument") != null);
+    try std.testing.expectEqual(turso.Step.row, try statement.step());
+    var cumulative = try statement.value(0);
+    defer cumulative.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 4), cumulative.integer);
+    try std.testing.expectEqual(turso.Step.done, try statement.step());
     statement.deinit();
     try std.testing.expectEqual(counters.inits, counters.state_deinits);
-    try std.testing.expectEqual(@as(usize, 1), counters.finals);
+    try std.testing.expectEqual(@as(usize, 2), counters.finals);
     try connection.unregisterFunction("zig_window_sum");
     try std.testing.expectEqual(@as(usize, 1), counters.context_deinits);
 }
