@@ -54,17 +54,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("docs/abi-parity.md"),
     });
     abi_parity_module.link_libc = true;
-    abi_parity_module.addLibraryPath(turso_lib_dir);
-    abi_parity_module.linkSystemLibrary("turso_sdk_kit", .{
-        .use_pkg_config = .no,
-        .preferred_link_mode = switch (turso_linkage) {
-            .dynamic => .dynamic,
-            .static => .static,
-        },
-        .search_strategy = .no_fallback,
-    });
+    abi_parity_module.addObjectFile(tursoLibraryPath(b, target.result, turso_lib_dir, turso_linkage));
     if (turso_linkage == .dynamic) abi_parity_module.addRPath(turso_lib_dir);
     const abi_parity_tests = b.addTest(.{ .root_module = abi_parity_module });
+    if (missing_turso_lib_dir) |failure| abi_parity_tests.step.dependOn(&failure.step);
     const run_abi_parity_tests = b.addRunArtifact(abi_parity_tests);
     const abi_parity_step = b.step("abi-parity", "Audit complete Turso SDK Kit 0.7.1 ABI parity");
     abi_parity_step.dependOn(&run_abi_parity_tests.step);

@@ -2,6 +2,8 @@
 
 This audit classifies all **48 public functions** and **27 public typedefs** in the vendored 554-line `turso.h`. `zig build abi-parity` compile-references every raw declaration and mapped Zig API, checks declaration-set equality, ABI layout/tags/callback calling conventions, and verifies this table against `src/abi_parity.zig`.
 
+Ordinary raw function signatures come from `@cImport` of that header; CI byte-compares the header with pinned upstream source. The manifest independently checks mapped Zig adapter signatures, but does not duplicate all 48 C prototypes as a second signature source.
+
 No callable C entry point is silently raw-only. `prepare_single` deliberately maps to the safer prepare-first adapter. Internal ownership rows are implementation carriers used only behind safe public operations.
 
 ## Functions
@@ -10,7 +12,7 @@ No callable C entry point is silently raw-only. `prepare_single` deliberately ma
 | --- | --- | --- | --- | --- |
 | `turso_connection_close` | `safe_wrapper` | `Connection.close` | Checked close ordering and retained diagnostics. | none |
 | `turso_connection_deinit` | `internal_ownership` | `Connection.deinit` | Owning handle teardown in reverse acquisition order. | none |
-| `turso_connection_enable_load_extension` | `safe_wrapper` | `Connection.setSqlExtensionLoadingEnabled` | Per-connection SQL extension capability gate. | none |
+| `turso_connection_enable_load_extension` | `trust_boundary_adapter` | `Connection.setSqlExtensionLoadingEnabledUnsafe` | Explicit unsafe capability grant to every SQL submitter on the connection. | unsafe native-code trust boundary |
 | `turso_connection_get_autocommit` | `safe_wrapper` | `Connection.autocommit` | Reentry-safe transaction-state accessor. | none |
 | `turso_connection_last_insert_rowid` | `safe_wrapper` | `Connection.lastInsertRowid` | Reentry-safe rowid accessor. | none |
 | `turso_connection_load_extension` | `trust_boundary_adapter` | `Connection.loadExtensionUnsafe` | Explicit arbitrary-native-code trust boundary; no sandbox or safe alias. | unsafe native-code trust boundary |
@@ -39,14 +41,14 @@ No callable C entry point is silently raw-only. `prepare_single` deliberately ma
 | `turso_statement_column_decltype` | `safe_wrapper` | `Statement.columnDeclaredType` | Copies and releases optional native text. | none |
 | `turso_statement_column_kind` | `safe_wrapper` | `Statement.columnKind` | Exhaustive stable-tag conversion. | none |
 | `turso_statement_column_name` | `safe_wrapper` | `Statement.columnName` | Copies and releases required native text. | none |
-| `turso_statement_deinit` | `internal_ownership` | `Statement.deinit` | Owning teardown with progress quiescence assertion. | none |
+| `turso_statement_deinit` | `internal_ownership` | `Statement.deinit` | Owning teardown that can cancel and drain pending native work. | none |
 | `turso_statement_execute` | `safe_wrapper` | `Statement.execute / Statement.executeProgress` | Synchronous and single-step progress adapters. | none |
 | `turso_statement_finalize` | `safe_wrapper` | `Statement.finalize / Statement.finalizeProgress` | Synchronous and single-step progress adapters. | none |
 | `turso_statement_n_change` | `safe_wrapper` | `Statement.changes` | Reentry-safe accessor. | none |
 | `turso_statement_named_position` | `safe_wrapper` | `Statement.namedPosition` | NUL validation and optional checked index. | none |
 | `turso_statement_parameter_name` | `safe_wrapper` | `Statement.parameterName` | Copies and releases optional native text. | none |
 | `turso_statement_parameters_count` | `safe_wrapper` | `Statement.parameterCount` | Validates signed count. | none |
-| `turso_statement_reset` | `safe_wrapper` | `Statement.reset` | Rejects pending caller-driven work. | none |
+| `turso_statement_reset` | `safe_wrapper` | `Statement.reset` | Explicit cancellation that may drain pending native work. | none |
 | `turso_statement_row_value_bytes_count` | `internal_ownership` | `Statement.value` | Validated with pointer before allocator-owned copy. | none |
 | `turso_statement_row_value_bytes_ptr` | `internal_ownership` | `Statement.value` | Borrowed bytes are copied before invalidation. | none |
 | `turso_statement_row_value_double` | `safe_wrapper` | `Statement.value` | Decoded through the row-value tagged union. | none |
